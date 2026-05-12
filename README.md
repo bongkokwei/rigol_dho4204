@@ -1,100 +1,138 @@
-
 # Rigol DHO4204 Python Control Interface
 
-A robust Python class for controlling and automating the **Rigol DHO4204** 4-channel oscilloscope. It communicates via VISA (USB or LAN) using SCPI commands and provides an easy-to-use API for configuration, measurement extraction, waveform data acquisition, and plotting.
+Python class for controlling the Rigol DHO4204 4-channel oscilloscope via VISA (USB or LAN). Provides an API for channel configuration, waveform acquisition, measurements, plotting, and data export.
 
-## Features
-
-* **Auto-Discovery**: Automatically finds and connects to the first available Rigol instrument if no connection string is provided.
-* **Robust Waveform Acquisition**: Implements chunked reading for raw waveform data to bypass common `libusb0` bulk-read timeouts on Windows.
-* **Data Processing**: Converts raw oscilloscope TMC/IEEE 488.2 block data directly into scaled `numpy` time and voltage arrays.
-* **Built-in Plotting**: Uses `matplotlib` to quickly plot or save captured waveforms.
-* **Comprehensive Control**:
-* Channel setup (Scale, Offset, Coupling, Probe ratio, Bandwidth limit)
-* Timebase & Trigger configuration
-* Run, Stop, Single, and Force Trigger actions
-* On-board hardware measurements (VPP, FREQ, VRMS, etc.)
-* Screenshot extraction (PNG)
-* Save/Recall complete scope setups as binary blobs
-
-
-* **Context Manager Support**: Easily integrate into `with` blocks to ensure clean setup and teardown.
-
-## Requirements
-
-This script relies on standard scientific Python libraries and PyVISA.
+## Installation
 
 ```bash
 pip install pyvisa pyvisa-py numpy matplotlib
-
 ```
 
-*(Note: If you are connecting over USB on Windows, ensure you have the appropriate VISA backend installed, such as NI-VISA or configure `pyvisa-py` with `libusb`.)*
-
-## Connection Options
-
-The `DHO4204` class accepts standard VISA resource strings. If left blank, it will attempt to auto-detect a Rigol instrument.
-
-* **USB**: `USB0::0x1AB1::0x0588::DS4A...::INSTR`
-* **LAN (VXI-11)**: `TCPIP0::192.168.1.100::INSTR`
-* **LAN (Raw Socket)**: `TCPIP0::192.168.1.100::5555::SOCKET`
-
-## Quick Start Example
+## Basic Usage
 
 ```python
-import time
 from rigol_dho4204 import DHO4204
 
-# Use the context manager to ensure safe closing of the connection
 with DHO4204() as scope:
-    # 1. Basic Setup
+    # Configure channel
     scope.channel_enable(1, True)
     scope.channel_coupling(1, "DC")
-    scope.channel_scale(1, 0.5)    # 500 mV/div
-    scope.channel_offset(1, 0.0)   # 0 V offset
-    
-    scope.timebase_scale(500e-9)   # 500 ns/div
+    scope.channel_scale(1, 0.5)  # 500 mV/div
+    scope.timebase_scale(500e-9)  # 500 ns/div
     scope.trigger_edge(ch=1, level=1.0, slope="POS")
 
-    # 2. Capture a signal
+    # Capture
     scope.run()
+    import time
     time.sleep(1)
     scope.stop()
 
-    # 3. Read hardware measurements
-    measurements = scope.measure_all(ch=1)
-    print("\n── Measurements (CH1) ──")
-    for k, v in measurements.items():
-        print(f"{k:>6s}: {v:.4g}")
+    # Get waveform data
+    t, v = scope.get_waveform(1, points=1000)
+    
+    # Or plot directly
+    scope.plot_waveform(1, save_path="waveform.png")
 
-    # 4. Save a screenshot to disk
-    scope.screenshot("screen.png")
-
-    # 5. Extract and plot waveform data
-    # (Extracts to numpy arrays natively, but plot_waveform is a handy wrapper)
-    scope.plot_waveform(1, save_path="ch1_waveform.png")
-
+    # Get measurements
+    measurements = scope.measure_all(1)
+    print(measurements)
 ```
 
-## API Overview
+## Multi-channel Waveform Acquisition
 
-### Core Functions
+Acquire and export waveforms from multiple channels:
 
-* `idn()`: Returns the instrument's identification string.
-* `reset()` / `system_restart()`: Resets the instrument.
-* `auto_scale()`: Triggers the oscilloscope's auto-set feature.
-* `save_setup()` / `recall_setup(data)`: Save and load device configurations.
+```python
+with DHO4204() as scope:
+    # Get waveforms from channels 1, 2, 3
+    waveforms = scope.get_waveforms(channels=[1, 2, 3], points=500)
+    
+    # Plot all channels together
+    scope.plot_waveforms(channels=[1, 2, 3], save_path="multichannel.png")
+    
+    # Save to CSV (all channels in one file)
+    scope.save_waveforms_csv("data.csv", waveforms)
+    
+    # Or save individual channel CSVs
+    for ch, (t, v) in waveforms.items():
+        scope.save_waveform_csv(f"ch{ch}.csv", t, v, ch=ch)
+```
 
-### Channel & Timebase
+## Connection Options
 
-* `channel_enable(ch, on)`: Turn a channel on/off.
-* `channel_scale(ch, volts_per_div)`: Set vertical scale.
-* `channel_offset(ch, volts)`: Set vertical offset.
-* `channel_coupling(ch, mode)`: Set coupling (`"DC"`, `"AC"`, `"GND"`).
-* `timebase_scale(seconds_per_div)`: Set horizontal scale.
+Pass a VISA resource string to connect:
 
-### Acquisition & Measurement
+```python
+# USB (auto-detected if None)
+scope = DHO4204("USB0::0x1AB1::0x0588::DS4A...::INSTR")
 
-* `measure(ch, item)`: Query a specific measurement (e.g., `"VPP"`, `"FREQ"`).
-* `get_waveform(ch, mode, points)`: Downloads the trace. Returns `(time_array, voltage_array)`.
-* `screenshot(filepath)`: Downloads the current screen buffer as a PNG file.
+# LAN (VXI-11)
+scope = DHO4204("TCPIP0::192.168.1.100::INSTR")
+
+# LAN (raw socket)
+scope = DHO4204("TCPIP0::192.168.1.100::5555::SOCKET")
+```
+
+## API Reference
+
+### Channel Control
+
+- `channel_enable(ch, on)` - Enable/disable channel
+- `channel_scale(ch, volts_per_div)` - Set vertical scale
+- `channel_offset(ch, volts)` - Set vertical offset
+- `channel_coupling(ch, mode)` - Set coupling (DC/AC/GND)
+- `channel_probe(ch, ratio)` - Set probe attenuation
+- `channel_bwlimit(ch, on)` - Enable 20 MHz BW limit
+- `get_channel_config(ch)` - Get channel settings
+
+### Timebase & Trigger
+
+- `timebase_scale(seconds_per_div)` - Set horizontal scale
+- `timebase_offset(seconds)` - Set horizontal offset
+- `trigger_edge(ch, level, slope)` - Configure edge trigger
+- `trigger_level(level)` - Set trigger level
+- `trigger_single()` - Single trigger
+- `trigger_force()` - Force trigger
+- `trigger_status()` - Get trigger status
+
+### Run/Stop
+
+- `run()` - Start acquisition
+- `stop()` - Stop acquisition
+
+### Measurements
+
+- `measure(ch, item)` - Read single measurement (VPP, VMAX, VMIN, VRMS, FREQ, PER, RISE, FALL, etc.)
+- `measure_all(ch)` - Get all common measurements for a channel
+
+### Waveform Acquisition
+
+- `get_waveform(ch, mode="NORMal", points=1000)` - Get waveform data from one channel, returns (time_array, voltage_array)
+- `get_waveforms(channels=None, mode="NORMal", points=1000)` - Get waveforms from multiple channels, returns {channel: (time, voltage)}
+
+### Data Export
+
+- `save_waveform_csv(filepath, time_data, voltage_data, ch=1)` - Save single channel to CSV
+- `save_waveforms_csv(filepath, waveforms)` - Save multiple channels to CSV
+
+### Plotting
+
+- `plot_waveform(ch, save_path=None)` - Plot single channel (show or save)
+- `plot_waveforms(channels=None, mode="NORMal", points=1000, save_path=None)` - Plot multiple channels
+
+### Utilities
+
+- `idn()` - Get instrument ID
+- `reset()` - Reset instrument
+- `system_restart()` - Full system restart
+- `auto_scale()` - Auto scale all channels
+- `screenshot(filepath)` - Save screenshot as PNG
+- `save_setup()` - Save scope configuration
+- `recall_setup(data)` - Restore scope configuration
+
+## Notes
+
+- Waveform acquisition in Normal mode is limited to 1000 points
+- The script automatically stops acquisition before reading waveforms for reliable data
+- Chunked reading is used for robust USB transfers on Windows
+- Use context manager (`with DHO4204() as scope:`) for safe cleanup

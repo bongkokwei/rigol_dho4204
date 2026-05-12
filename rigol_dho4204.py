@@ -427,7 +427,7 @@ class DHO4204:
             plt.show()
         plt.close(fig)
 
-    # ── Screenshot ─────────────────────────────────────────────────────
+    # ── Screenshot ──────────────────────────────────────────────────
 
     def screenshot(self, filepath: str = "screenshot.png"):
         """Download a screenshot from the oscilloscope."""
@@ -442,7 +442,7 @@ class DHO4204:
         Path(filepath).write_bytes(img_data)
         print(f"Screenshot saved: {filepath}")
 
-    # ── Cursor measurements ────────────────────────────────────────────
+    # ── Cursor measurements ──────────────────────────────────────────
 
     def cursor_manual(self, ch: int, xa: float, xb: float):
         """Set manual time cursors."""
@@ -453,7 +453,7 @@ class DHO4204:
         self.write(f":CURSor:MANual:CAX {xa}")
         self.write(f":CURSor:MANual:CBX {xb}")
 
-    # ── Math / FFT ─────────────────────────────────────────────────────
+    # ── Math / FFT ─────────────────────────────────────────────────
 
     def math_fft(self, ch: int = 1, math_ch: int = 1):
         """Enable FFT on a channel."""
@@ -464,7 +464,7 @@ class DHO4204:
         self.write(f":MATH{math_ch}:OPERator FFT")
         self.write(f":MATH{math_ch}:SOURce1 CHANnel{ch}")
 
-    # ── Save/Recall ────────────────────────────────────────────────────
+    # ── Save/Recall ────────────────────────────────────────────────
 
     def save_setup(self) -> bytes:
         """Read the current setup as a binary data blob (to save externally)."""
@@ -485,7 +485,7 @@ class DHO4204:
         self.inst.write_raw(b":SYSTem:SETup " + header + setup_data)
         time.sleep(1)
 
-    # ── Utility ────────────────────────────────────────────────────────
+    # ── Utility ──────────────────────────────────────────────────────
 
     def _check_ch(self, ch: int):
         if ch not in self.CHANNELS:
@@ -510,9 +510,9 @@ class DHO4204:
         self.close()
 
 
-# ══════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════
 # Example usage
-# ══════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
 
