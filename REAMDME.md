@@ -11,16 +11,16 @@ A robust Python class for controlling and automating the **Rigol DHO4204** 4-cha
 * **Auto-Discovery**: Automatically finds and connects to the first available Rigol instrument if no connection string is provided.
 * **Robust Waveform Acquisition**: Implements chunked reading for raw waveform data to bypass common `libusb0` bulk-read timeouts on Windows.
 * **Data Processing**: Converts raw oscilloscope TMC/IEEE 488.2 block data directly into scaled `numpy` time and voltage arrays.
-* **Built-in Plotting**: Uses `matplotlib` to quickly plot or save captured waveforms.
+* **Multi-channel Support**: Simultaneously acquire and plot waveforms from multiple channels.
+* **CSV Export**: Save waveform data (single or multi-channel) to CSV files for analysis in other tools.
+* **Built-in Plotting**: Uses `matplotlib` to quickly plot or save captured waveforms, with multi-channel visualization.
 * **Comprehensive Control**:
-* Channel setup (Scale, Offset, Coupling, Probe ratio, Bandwidth limit)
-* Timebase & Trigger configuration
-* Run, Stop, Single, and Force Trigger actions
-* On-board hardware measurements (VPP, FREQ, VRMS, etc.)
-* Screenshot extraction (PNG)
-* Save/Recall complete scope setups as binary blobs
-
-
+  * Channel setup (Scale, Offset, Coupling, Probe ratio, Bandwidth limit)
+  * Timebase & Trigger configuration
+  * Run, Stop, Single, and Force Trigger actions
+  * On-board hardware measurements (VPP, FREQ, VRMS, etc.)
+  * Screenshot extraction (PNG)
+  * Save/Recall complete scope setups as binary blobs
 * **Context Manager Support**: Easily integrate into `with` blocks to ensure clean setup and teardown.
 
 ## Requirements
@@ -77,6 +77,11 @@ with DHO4204() as scope:
     # (Extracts to numpy arrays natively, but plot_waveform is a handy wrapper)
     scope.plot_waveform(1, save_path="ch1_waveform.png")
 
+    # 6. Multi-channel waveform acquisition and export
+    waveforms = scope.get_waveforms(channels=[1, 2, 3], points=500)
+    scope.plot_waveforms(channels=[1, 2, 3], save_path="multichannel.png")
+    scope.save_waveforms_csv("waveforms.csv", waveforms)
+
 ```
 
 ## API Overview
@@ -99,5 +104,67 @@ with DHO4204() as scope:
 ### Acquisition & Measurement
 
 * `measure(ch, item)`: Query a specific measurement (e.g., `"VPP"`, `"FREQ"`).
-* `get_waveform(ch, mode, points)`: Downloads the trace. Returns `(time_array, voltage_array)`.
-* `screenshot(filepath)`: Downloads the current screen buffer as a PNG file.
+* `measure_all(ch)`: Get all common measurements for a channel at once.
+* `get_waveform(ch, mode, points)`: Download a single channel trace. Returns `(time_array, voltage_array)`.
+* `get_waveforms(channels, mode, points)`: Download waveforms from multiple channels. Returns `{channel: (time_array, voltage_array)}` dict.
+* `screenshot(filepath)`: Download the current screen buffer as a PNG file.
+
+### Data Export
+
+* `save_waveform_csv(filepath, time_data, voltage_data, ch)`: Save single-channel waveform to CSV file.
+* `save_waveforms_csv(filepath, waveforms)`: Save multiple-channel waveforms to a single CSV file with aligned time data.
+
+### Plotting
+
+* `plot_waveform(ch, save_path)`: Capture and plot a single-channel waveform.
+* `plot_waveforms(channels, mode, points, save_path)`: Capture and plot multiple-channel waveforms with legend.
+
+## Multi-channel Operations
+
+The DHO4204 class supports simultaneous acquisition, export, and visualization of waveforms from multiple channels.
+
+### Example: Acquire and Export Multi-channel Data
+
+```python
+from rigol_dho4204 import DHO4204
+
+with DHO4204() as scope:
+    # Setup channels 1, 2, and 3
+    for ch in [1, 2, 3]:
+        scope.channel_enable(ch, True)
+        scope.channel_coupling(ch, "DC")
+        scope.channel_scale(ch, 0.5)
+    
+    # Acquire waveforms from multiple channels
+    waveforms = scope.get_waveforms(channels=[1, 2, 3], points=500)
+    
+    # Export to CSV (all channels in one file)
+    scope.save_waveforms_csv("multichannel_data.csv", waveforms)
+    
+    # Plot all channels together with legend
+    scope.plot_waveforms(channels=[1, 2, 3], save_path="multichannel_plot.png")
+    
+    # Or save individual channel CSVs
+    for ch, (t, v) in waveforms.items():
+        scope.save_waveform_csv(f"ch{ch}_data.csv", t, v, ch=ch)
+```
+
+### CSV Output Format
+
+**Single-channel CSV:**
+```
+Channel 1 Waveform
+Time (s),Voltage (V)
+0.000000e+00,0.123456
+5.000000e-09,0.234567
+...
+```
+
+**Multi-channel CSV:**
+```
+Multi-channel Waveform Data
+Time (s),CH1 (V),CH2 (V),CH3 (V)
+0.000000e+00,0.123456,0.456789,0.789012
+5.000000e-09,0.234567,0.567890,0.890123
+...
+```

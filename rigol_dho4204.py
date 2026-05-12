@@ -13,6 +13,7 @@ import pyvisa
 import numpy as np
 import time
 import struct
+import csv
 from pathlib import Path
 
 
@@ -300,6 +301,132 @@ class DHO4204:
             plt.show()
         plt.close(fig)
 
+    def get_waveforms(
+        self, channels: list[int] | None = None, mode: str = "NORMal", points: int = 1000
+    ) -> dict[int, tuple[np.ndarray, np.ndarray]]:
+        """
+        Download waveform data from multiple channels.
+
+        Args:
+            channels:   List of channel numbers (1-4). If None, use all active channels.
+            mode:       NORMal (screen), MAXimum (full memory), RAW.
+            points:     Number of points to request (NORMal max: 1000).
+
+        Returns:
+            Dictionary {channel: (time_array, voltage_array)} for each channel.
+        """
+        if channels is None:
+            channels = list(self.CHANNELS)
+
+        waveforms = {}
+        for ch in channels:
+            try:
+                t, v = self.get_waveform(ch, mode=mode, points=points)
+                waveforms[ch] = (t, v)
+                print(f"Fetched waveform from Channel {ch}")
+            except Exception as e:
+                print(f"Failed to fetch waveform from Channel {ch}: {e}")
+
+        return waveforms
+
+    def save_waveform_csv(
+        self, filepath: str, time_data: np.ndarray, voltage_data: np.ndarray, ch: int = 1
+    ):
+        """
+        Save waveform data to CSV file.
+
+        Args:
+            filepath:     Path to save CSV file.
+            time_data:    Time array (x-axis).
+            voltage_data: Voltage array (y-axis).
+            ch:           Channel number (for reference in file).
+        """
+        with open(filepath, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([f"Channel {ch} Waveform"])
+            writer.writerow(["Time (s)", "Voltage (V)"])
+            for t, v in zip(time_data, voltage_data):
+                writer.writerow([f"{t:.15e}", f"{v:.6f}"])
+        print(f"Saved waveform CSV: {filepath}")
+
+    def save_waveforms_csv(self, filepath: str, waveforms: dict[int, tuple[np.ndarray, np.ndarray]]):
+        """
+        Save multiple waveforms to a single CSV file.
+
+        Args:
+            filepath:   Path to save CSV file.
+            waveforms:  Dictionary {channel: (time_array, voltage_array)}.
+        """
+        if not waveforms:
+            print("No waveforms to save.")
+            return
+
+        with open(filepath, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Multi-channel Waveform Data"])
+            writer.writerow(["Time (s)"] + [f"CH{ch} (V)" for ch in sorted(waveforms.keys())])
+
+            # Assume all channels have the same time array (use the first one)
+            time_data = waveforms[sorted(waveforms.keys())[0]][0]
+            for i, t in enumerate(time_data):
+                row = [f"{t:.15e}"]
+                for ch in sorted(waveforms.keys()):
+                    _, voltage_data = waveforms[ch]
+                    row.append(f"{voltage_data[i]:.6f}")
+                writer.writerow(row)
+
+        print(f"Saved multi-channel waveforms CSV: {filepath}")
+
+    def plot_waveforms(
+        self,
+        channels: list[int] | None = None,
+        mode: str = "NORMal",
+        points: int = 1000,
+        save_path: str | None = None,
+    ):
+        """
+        Capture and plot waveforms from multiple channels.
+
+        Args:
+            channels:   List of channel numbers (1-4). If None, use all active channels.
+            mode:       NORMal (screen), MAXimum (full memory), RAW.
+            points:     Number of points to request (NORMal max: 1000).
+            save_path:  Optional path to save the figure.
+        """
+        import matplotlib.pyplot as plt
+
+        waveforms = self.get_waveforms(channels=channels, mode=mode, points=points)
+
+        if not waveforms:
+            print("No waveforms to plot.")
+            return
+
+        fig, ax = plt.subplots(figsize=(14, 6))
+
+        colors = ["C0", "C1", "C2", "C3"]  # matplotlib default colors
+        for idx, (ch, (t, v)) in enumerate(sorted(waveforms.items())):
+            ax.plot(
+                t * 1e6,
+                v,
+                linewidth=0.7,
+                rasterized=True,
+                label=f"CH{ch}",
+                color=colors[idx % len(colors)],
+            )
+
+        ax.set_xlabel("Time (µs)")
+        ax.set_ylabel("Voltage (V)")
+        ax.set_title("DHO4204 — Multi-channel Waveforms")
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc="upper right")
+
+        if save_path:
+            fig.savefig(save_path, dpi=300, bbox_inches="tight")
+            print(f"Saved plot: {save_path}")
+        else:
+            plt.show()
+        plt.close(fig)
+
     # ── Screenshot ─────────────────────────────────────────────────────
 
     def screenshot(self, filepath: str = "screenshot.png"):
@@ -414,6 +541,15 @@ if __name__ == "__main__":
 
         # # Download and plot waveform
         # scope.plot_waveform(1, save_path="figures/awg_multitone_3tones_python.png")
+
+        # # Multi-channel waveform examples:
+        # waveforms = scope.get_waveforms(channels=[1, 2, 3], points=500)
+        # scope.plot_waveforms(channels=[1, 2, 3], save_path="figures/multichannel.png")
+        # scope.save_waveforms_csv("waveforms_multichannel.csv", waveforms)
+
+        # # Single channel CSV export:
+        # t, v = scope.get_waveform(1)
+        # scope.save_waveform_csv("waveform_ch1.csv", t, v, ch=1)
 
         # # Save a screenshot
         # scope.screenshot("screen.png")
