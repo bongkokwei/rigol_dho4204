@@ -16,6 +16,9 @@ import struct
 import csv
 from pathlib import Path
 
+__version__ = "0.1.0"
+__all__ = ["DHO4204"]
+
 
 class DHO4204:
     """Control interface for Rigol DHO4204 4-channel oscilloscope."""
@@ -508,50 +511,3 @@ class DHO4204:
 
     def __exit__(self, *_):
         self.close()
-
-
-# ════════════════════════════════════════════════════════════════════
-# Example usage
-# ════════════════════════════════════════════════════════════════════
-
-if __name__ == "__main__":
-
-    with DHO4204() as scope:
-        # Basic setup
-        scope.channel_enable(1, True)
-        scope.channel_coupling(1, "DC")
-        scope.channel_scale(1, 0.5)
-        scope.channel_offset(1, 0.0)
-        scope.timebase_scale(500e-9)
-        scope.trigger_edge(ch=1, level=1.0, slope="POS")
-
-        # Let it trigger
-        scope.run()
-        time.sleep(1)
-        scope.stop()
-
-        # Read measurements
-        measurements = scope.measure_all(1)
-        print("\n── Measurements (CH1) ──")
-        for k, v in measurements.items():
-            print(f"  {k:>6s}: {v:.4g}")
-
-        scope.system_restart()
-        print("\nScope restarted and ready.")
-
-        # # Download and plot waveform
-        # scope.plot_waveform(1, save_path="figures/awg_multitone_3tones_python.png")
-
-        # # Multi-channel waveform examples:
-        # waveforms = scope.get_waveforms(channels=[1, 2, 3], points=500)
-        # scope.plot_waveforms(channels=[1, 2, 3], save_path="figures/multichannel.png")
-        # scope.save_waveforms_csv("waveforms_multichannel.csv", waveforms)
-
-        # # Single channel CSV export:
-        # t, v = scope.get_waveform(1)
-        # scope.save_waveform_csv("waveform_ch1.csv", t, v, ch=1)
-
-        # # Save a screenshot
-        # scope.screenshot("screen.png")
-
-        print("\nDone with oscilloscope demo.")
