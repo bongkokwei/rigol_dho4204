@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rigol-dho4204"
+version = "0.1.0"
+description = "Python control interface for Rigol DHO4204 4-channel oscilloscope via VISA"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Rigol DHO4204 Contributors"}
+]
+keywords = ["rigol", "oscilloscope", "dho4204", "visa", "instrument-control"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Electronic Design Automation (EDA)",
+    "Topic :: System :: Hardware",
+]
+
+dependencies = [
+    "pyvisa>=1.11",
+    "pyvisa-py>=0.5",
+    "numpy>=1.20",
+    "matplotlib>=3.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=6.0",
+    "black>=22.0",
+    "flake8>=4.0",
+    "mypy>=0.900",
+]
+
+[project.urls]
+Repository = "https://github.com/bongkokwei/rigol_dho4204"
+Issues = "https://github.com/bongkokwei/rigol_dho4204/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["rigol_dho4204"]
