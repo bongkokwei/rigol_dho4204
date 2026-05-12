@@ -1,6 +1,3 @@
-Here is a README file tailored for your Rigol DHO4204 control script.
-
----
 
 # Rigol DHO4204 Python Control Interface
 
