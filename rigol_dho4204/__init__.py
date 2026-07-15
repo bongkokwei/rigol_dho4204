@@ -159,6 +159,20 @@ class DHO4204:
     def trigger_status(self) -> str:
         return self.query(":TRIGger:STATus?")
 
+    def trigger_holdoff(self, seconds: float):
+        """Set trigger holdoff time in seconds (range: 8 ns to 10 s, default 8 ns).
+
+        Holdoff is the time the scope waits before re-arming the trigger
+        after a trigger event — useful for stably triggering complex
+        repetitive waveforms. Not available for Video, Timeout, Setup&Hold,
+        Nth Edge, RS232, I2C, SPI, CAN, FlexRay, LIN, I2S, or 1553B triggers.
+        """
+        self.write(f":TRIGger:HOLDoff {seconds}")
+
+    def get_trigger_holdoff(self) -> float:
+        """Query the current trigger holdoff time in seconds."""
+        return float(self.query(":TRIGger:HOLDoff?"))
+
     # ── Run/Stop ───────────────────────────────────────────────────────
 
     def run(self):
@@ -173,7 +187,7 @@ class DHO4204:
         """
         Read a measurement.  Common items:
           VPP, VMAX, VMIN, VAMP, VTOP, VBAS, VAVG, VRMS,
-          FREQ, PER, PDUT, NDUT, RISE, FALL, PWIDth, NWIDth
+          FREQ, PER, PDUT, NDUT, RTIM, FTIM, PWIDth, NWIDth
         """
         self._check_ch(ch)
         # DHO4000 syntax: first enable, then query
@@ -182,11 +196,6 @@ class DHO4204:
         val = self.query_safe(
             f":MEASure:ITEM? {item.upper()},CHANnel{ch}", default="9.9E37"
         )
-        # If that fails, try the direct query form
-        if val in ("", "9.9E37"):
-            val = self.query_safe(
-                f":MEASure:{item.upper()}? CHANnel{ch}", default="9.9E37"
-            )
         try:
             return float(val)
         except ValueError:
@@ -194,8 +203,32 @@ class DHO4204:
 
     def measure_all(self, ch: int) -> dict:
         """Grab common measurements for a channel."""
-        items = ["VPP", "VMAX", "VMIN", "VRMS", "FREQ", "PER", "RISE", "FALL"]
+        items = ["VPP", "VMAX", "VMIN", "VRMS", "FREQ", "PER", "RTIM", "FTIM"]
         return {item: self.measure(ch, item) for item in items}
+
+    # ── Acquisition (memory depth / sample rate) ────────────────────────
+
+    def acquire_memory_depth(self, depth):
+        """Set memory (record) depth, e.g. 1000, '1M', '10M', or 'AUTO'."""
+        self.write(f":ACQuire:MDEPth {depth}")
+
+    def get_memory_depth(self) -> float:
+        """Query current memory depth in points. Returns NaN if the scope reports AUTO."""
+        val = self.query_safe(":ACQuire:MDEPth?", default="")
+        try:
+            return float(val)
+        except ValueError:
+            return float("nan")
+
+    def sample_rate(self) -> float:
+        """Query the current sample rate (samples/sec). Read-only — derived from timebase and memory depth."""
+        return float(self.query(":ACQuire:SRATe?"))
+
+    def get_acquire_config(self) -> dict:
+        return {
+            "memory_depth": self.get_memory_depth(),
+            "sample_rate_Sps": self.sample_rate(),
+        }
 
     # ── Waveform data acquisition ──────────────────────────────────────
 
@@ -207,16 +240,19 @@ class DHO4204:
 
         Args:
             ch:     Channel number (1-4).
-            mode:   NORMal (screen), MAXimum (full memory), RAW.
-            points: Number of points to request (NORMal max: 1000).
+            mode:   NORMal (screen, max 1000 pts), MAXimum/RAW (full memory,
+                    clamped to current memory depth — see acquire_memory_depth()).
+            points: Number of points to request.
 
         Returns:
             (time_array, voltage_array) as numpy arrays.
 
         Notes:
-            Uses a manual chunked read_raw loop as a fallback for libusb0 on
-            Windows, which times out on large single bulk reads via
-            query_binary_values.
+            Prefers a single query_binary_values() bulk read, which parses the
+            IEEE-488.2 block header length up front and works over USB and
+            LAN/socket alike. Falls back to a manual chunked read_raw loop
+            only if that fails — a workaround for libusb0 on Windows, which
+            times out on large single bulk reads.
         """
         self._check_ch(ch)
 
@@ -228,10 +264,14 @@ class DHO4204:
         self.write(f":WAVeform:MODE {mode.upper()}")
         self.write(":WAVeform:FORMat BYTE")
 
-        # Clamp points to valid range for NORMal mode (1–1000)
+        # Clamp points to the mode's valid range: NORMal is capped at the
+        # 1000-point screen buffer; MAXimum/RAW are capped at memory depth.
         if mode.upper() in ("NORMAL", "NORM"):
             points = min(max(1, points), 1000)
-            self.write(f":WAVeform:POINts {points}")
+        else:
+            max_depth = self.get_memory_depth()
+            points = max(1, points) if np.isnan(max_depth) else min(max(1, points), int(max_depth))
+        self.write(f":WAVeform:POINts {points}")
 
         # Sync — wait for scope to acknowledge settings
         self.query("*OPC?")
@@ -240,7 +280,9 @@ class DHO4204:
         old_timeout = self.inst.timeout
         old_chunk = self.inst.chunk_size
 
-        self.inst.timeout = 1000
+        # Generous enough for the preamble/data-request round trip on large
+        # MAXimum/RAW transfers, which are slower for the scope to prepare.
+        self.inst.timeout = 5000
         self.inst.chunk_size = 4096
 
         try:
@@ -252,28 +294,38 @@ class DHO4204:
             y_orig = float(preamble[8])
             y_ref = float(preamble[9])
 
-            # Send the data request, then read raw in small chunks.
-            # This sidesteps the libusb0 bulk-read timeout on Windows.
-            self.write(":WAVeform:DATA?")
-            time.sleep(0.5)  # let scope prepare the response
-
-            raw = b""
-            while True:
+            try:
+                data = self.inst.query_binary_values(
+                    ":WAVeform:DATA?", datatype="B", container=np.array, header_fmt="ieee"
+                )
+            except Exception:
+                # Fallback: pull the data in small chunks. Needed for
+                # backends (e.g. libusb0 on Windows) that time out on
+                # large single bulk reads.
                 try:
-                    chunk = self.inst.read_raw(self.inst.chunk_size)
-                    raw += chunk
-                    if len(chunk) < self.inst.chunk_size:
-                        break  # last (short) chunk — transfer complete
+                    self.inst.clear()
                 except Exception:
-                    break  # timeout on an empty read means we're done
+                    pass
+                self.write(":WAVeform:DATA?")
+                time.sleep(0.5)  # let scope prepare the response
 
-            # Parse TMC/IEEE 488.2 block header: #N<N digits of length><data>
-            if raw and chr(raw[0]) == "#":
-                n_digits = int(chr(raw[1]))
-                data_len = int(raw[2 : 2 + n_digits])
-                raw = raw[2 + n_digits : 2 + n_digits + data_len]
+                raw = b""
+                while True:
+                    try:
+                        chunk = self.inst.read_raw(self.inst.chunk_size)
+                        raw += chunk
+                        if len(chunk) < self.inst.chunk_size:
+                            break  # last (short) chunk — transfer complete
+                    except Exception:
+                        break  # timeout on an empty read means we're done
 
-            data = np.frombuffer(raw, dtype=np.uint8)
+                # Parse TMC/IEEE 488.2 block header: #N<N digits of length><data>
+                if raw and chr(raw[0]) == "#":
+                    n_digits = int(chr(raw[1]))
+                    data_len = int(raw[2 : 2 + n_digits])
+                    raw = raw[2 + n_digits : 2 + n_digits + data_len]
+
+                data = np.frombuffer(raw, dtype=np.uint8)
 
             # Scale to physical units
             voltage = (data.astype(float) - y_ref) * y_inc + y_orig
@@ -452,7 +504,7 @@ class DHO4204:
         self._check_ch(ch)
         self.write(":CURSor:MODE MANual")
         self.write(f":CURSor:MANual:SOURce CHANnel{ch}")
-        self.write(":CURSor:MANual:TYPE X")
+        self.write(":CURSor:MANual:TYPE TIME")
         self.write(f":CURSor:MANual:CAX {xa}")
         self.write(f":CURSor:MANual:CBX {xb}")
 
