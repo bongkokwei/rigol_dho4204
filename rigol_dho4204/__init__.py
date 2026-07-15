@@ -187,7 +187,7 @@ class DHO4204:
         """
         Read a measurement.  Common items:
           VPP, VMAX, VMIN, VAMP, VTOP, VBAS, VAVG, VRMS,
-          FREQ, PER, PDUT, NDUT, RISE, FALL, PWIDth, NWIDth
+          FREQ, PER, PDUT, NDUT, RTIM, FTIM, PWIDth, NWIDth
         """
         self._check_ch(ch)
         # DHO4000 syntax: first enable, then query
@@ -196,11 +196,6 @@ class DHO4204:
         val = self.query_safe(
             f":MEASure:ITEM? {item.upper()},CHANnel{ch}", default="9.9E37"
         )
-        # If that fails, try the direct query form
-        if val in ("", "9.9E37"):
-            val = self.query_safe(
-                f":MEASure:{item.upper()}? CHANnel{ch}", default="9.9E37"
-            )
         try:
             return float(val)
         except ValueError:
@@ -208,7 +203,7 @@ class DHO4204:
 
     def measure_all(self, ch: int) -> dict:
         """Grab common measurements for a channel."""
-        items = ["VPP", "VMAX", "VMIN", "VRMS", "FREQ", "PER", "RISE", "FALL"]
+        items = ["VPP", "VMAX", "VMIN", "VRMS", "FREQ", "PER", "RTIM", "FTIM"]
         return {item: self.measure(ch, item) for item in items}
 
     # ── Acquisition (memory depth / sample rate) ────────────────────────
@@ -509,7 +504,7 @@ class DHO4204:
         self._check_ch(ch)
         self.write(":CURSor:MODE MANual")
         self.write(f":CURSor:MANual:SOURce CHANnel{ch}")
-        self.write(":CURSor:MANual:TYPE X")
+        self.write(":CURSor:MANual:TYPE TIME")
         self.write(f":CURSor:MANual:CAX {xa}")
         self.write(f":CURSor:MANual:CBX {xb}")
 
