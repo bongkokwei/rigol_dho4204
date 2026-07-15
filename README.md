@@ -58,6 +58,28 @@ with DHO4204() as scope:
         scope.save_waveform_csv(f"ch{ch}.csv", t, v, ch=ch)
 ```
 
+## Increasing Waveform Resolution & Range
+
+`NORMal` mode is capped at 1000 points (the scope's screen buffer). For higher resolution or a longer capture window, set the memory depth and use `MAXimum`/`RAW` mode — points are now clamped to the actual memory depth instead of being silently ignored:
+
+```python
+with DHO4204() as scope:
+    scope.acquire_memory_depth("10M")     # raise record length
+    print(scope.get_acquire_config())     # {'memory_depth': ..., 'sample_rate_Sps': ...}
+
+    t, v = scope.get_waveform(1, mode="RAW", points=1_000_000)
+```
+
+## Trigger Holdoff
+
+Use holdoff to stably trigger complex repetitive waveforms (e.g. pulse trains):
+
+```python
+with DHO4204() as scope:
+    scope.trigger_holdoff(2e-7)         # 200 ns
+    print(scope.get_trigger_holdoff())
+```
+
 ## Connection Options
 
 Pass a VISA resource string to connect:
@@ -94,6 +116,8 @@ scope = DHO4204("TCPIP0::192.168.1.100::5555::SOCKET")
 - `trigger_single()` - Single trigger
 - `trigger_force()` - Force trigger
 - `trigger_status()` - Get trigger status
+- `trigger_holdoff(seconds)` - Set trigger holdoff time (8 ns to 10 s)
+- `get_trigger_holdoff()` - Get trigger holdoff time
 
 ### Run/Stop
 
@@ -102,12 +126,19 @@ scope = DHO4204("TCPIP0::192.168.1.100::5555::SOCKET")
 
 ### Measurements
 
-- `measure(ch, item)` - Read single measurement (VPP, VMAX, VMIN, VRMS, FREQ, PER, RISE, FALL, etc.)
+- `measure(ch, item)` - Read single measurement (VPP, VMAX, VMIN, VRMS, FREQ, PER, RTIM, FTIM, etc.)
 - `measure_all(ch)` - Get all common measurements for a channel
+
+### Acquisition Configuration
+
+- `acquire_memory_depth(depth)` - Set memory depth (e.g. `1000`, `"1M"`, `"10M"`, `"AUTO"`)
+- `get_memory_depth()` - Get current memory depth in points (NaN if AUTO)
+- `sample_rate()` - Get current sample rate in samples/sec (read-only)
+- `get_acquire_config()` - Get memory depth and sample rate together
 
 ### Waveform Acquisition
 
-- `get_waveform(ch, mode="NORMal", points=1000)` - Get waveform data from one channel, returns (time_array, voltage_array)
+- `get_waveform(ch, mode="NORMal", points=1000)` - Get waveform data from one channel, returns (time_array, voltage_array). `points` is clamped to 1000 in `NORMal` mode, or to the current memory depth in `MAXimum`/`RAW` mode
 - `get_waveforms(channels=None, mode="NORMal", points=1000)` - Get waveforms from multiple channels, returns {channel: (time, voltage)}
 
 ### Data Export
@@ -132,7 +163,7 @@ scope = DHO4204("TCPIP0::192.168.1.100::5555::SOCKET")
 
 ## Notes
 
-- Waveform acquisition in Normal mode is limited to 1000 points
+- Waveform acquisition in Normal mode is limited to 1000 points; use `MAXimum`/`RAW` mode plus `acquire_memory_depth()` for more
 - The script automatically stops acquisition before reading waveforms for reliable data
-- Chunked reading is used for robust USB transfers on Windows
+- Waveform reads prefer a single bulk transfer and only fall back to chunked reads for USB backends (e.g. libusb0 on Windows) that time out on large reads
 - Use context manager (`with DHO4204() as scope:`) for safe cleanup
