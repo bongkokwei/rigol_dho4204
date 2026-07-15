@@ -159,6 +159,20 @@ class DHO4204:
     def trigger_status(self) -> str:
         return self.query(":TRIGger:STATus?")
 
+    def trigger_holdoff(self, seconds: float):
+        """Set trigger holdoff time in seconds (range: 8 ns to 10 s, default 8 ns).
+
+        Holdoff is the time the scope waits before re-arming the trigger
+        after a trigger event — useful for stably triggering complex
+        repetitive waveforms. Not available for Video, Timeout, Setup&Hold,
+        Nth Edge, RS232, I2C, SPI, CAN, FlexRay, LIN, I2S, or 1553B triggers.
+        """
+        self.write(f":TRIGger:HOLDoff {seconds}")
+
+    def get_trigger_holdoff(self) -> float:
+        """Query the current trigger holdoff time in seconds."""
+        return float(self.query(":TRIGger:HOLDoff?"))
+
     # ── Run/Stop ───────────────────────────────────────────────────────
 
     def run(self):
