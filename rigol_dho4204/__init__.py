@@ -27,21 +27,31 @@ class DHO4204:
 
     def __init__(self, resource_string: str | None = None, timeout_ms: int = 10_000):
         self.rm = pyvisa.ResourceManager()
+        self.inst = None
         if resource_string is None:
             resource_string = self._auto_detect()
-        self.inst = self.rm.open_resource(resource_string)
-        self.inst.timeout = timeout_ms
-        # For raw socket connections
-        if "SOCKET" in resource_string.upper():
-            self.inst.read_termination = "\n"
-            self.inst.write_termination = "\n"
-        # Reset USB/VISA pipe in case previous session crashed mid-transfer
+        self._resource_string = resource_string
+        self._timeout_ms = timeout_ms
         try:
-            self.inst.clear()
-        except Exception:
-            pass
-        time.sleep(0.3)
-        print(f"Connected: {self.idn()}")
+            self.inst = self.rm.open_resource(resource_string)
+            self.inst.timeout = timeout_ms
+            # For raw socket connections
+            if "SOCKET" in resource_string.upper():
+                self.inst.read_termination = "\n"
+                self.inst.write_termination = "\n"
+            # Reset USB/VISA pipe in case previous session crashed mid-transfer
+            try:
+                self.inst.clear()
+            except Exception:
+                pass
+            time.sleep(0.3)
+            print(f"Connected: {self.idn()}")
+        except pyvisa.errors.VisaIOError:
+            # Stale USBTMC session lock from a prior process that hasn't
+            # cleared yet (Windows/NI-VISA) — force a full teardown/reopen.
+            self.reconnect()
+            time.sleep(0.3)
+            print(f"Connected: {self.idn()}")
 
     def _auto_detect(self) -> str:
         """Auto-detect the first Rigol instrument on USB/LAN."""
@@ -555,8 +565,43 @@ class DHO4204:
                 action()
             except Exception:
                 pass
+        # Let the USBTMC endpoint fully release before the process exits —
+        # on Windows/NI-VISA it doesn't drop the lock immediately, which
+        # otherwise causes VI_ERROR_RSRC_NFOUND on the next open_resource().
+        time.sleep(1)
         self.inst = None
         self.rm = None
+
+    def reconnect(self):
+        """Force a full VISA session teardown and reopen.
+
+        Used when open_resource() fails with a stale USBTMC session lock
+        (VI_ERROR_RSRC_NFOUND) left behind by a previous session that closed
+        without enough settle time. Uses the resource string and timeout
+        stored at __init__ time.
+        """
+        if self.inst is not None:
+            try:
+                self.inst.clear()
+            except Exception:
+                pass
+            try:
+                self.inst.close()
+            except Exception:
+                pass
+        if self.rm is not None:
+            try:
+                self.rm.close()
+            except Exception:
+                pass
+        time.sleep(1)
+        self.rm = pyvisa.ResourceManager()
+        self.inst = self.rm.open_resource(self._resource_string)
+        self.inst.timeout = self._timeout_ms
+        if "SOCKET" in self._resource_string.upper():
+            self.inst.read_termination = "\n"
+            self.inst.write_termination = "\n"
+        return self.inst
 
     def __enter__(self):
         return self
