@@ -48,10 +48,9 @@ class DHO4204:
             print(f"Connected: {self.idn()}")
         except pyvisa.errors.VisaIOError:
             # Stale USBTMC session lock from a prior process that hasn't
-            # cleared yet (Windows/NI-VISA) — force a full teardown/reopen.
-            self.reconnect()
-            time.sleep(0.3)
-            print(f"Connected: {self.idn()}")
+            # cleared yet (Windows/NI-VISA) — force a full teardown/reopen,
+            # retrying with backoff until the device actually responds.
+            print(f"Connected: {self.reconnect()}")
 
     def _auto_detect(self) -> str:
         """Auto-detect the first Rigol instrument on USB/LAN."""
@@ -572,13 +571,16 @@ class DHO4204:
         self.inst = None
         self.rm = None
 
-    def reconnect(self):
-        """Force a full VISA session teardown and reopen.
+    def reconnect(self, retries: int = 5, base_delay: float = 1.0) -> str:
+        """Force a full VISA session teardown and reopen, retrying with
+        backoff until the device responds to *IDN? or the retry budget runs out.
 
-        Used when open_resource() fails with a stale USBTMC session lock
-        (VI_ERROR_RSRC_NFOUND) left behind by a previous session that closed
-        without enough settle time. Uses the resource string and timeout
-        stored at __init__ time.
+        Used when open_resource() (or a query right after it) fails with a
+        stale USBTMC session lock (VI_ERROR_RSRC_NFOUND / VI_ERROR_IO) left
+        behind by a previous session — the OS-level release isn't always
+        done clearing after a single settle delay, so a single retry isn't
+        reliable. Uses the resource string and timeout stored at __init__
+        time. Returns the *IDN? response on success.
         """
         if self.inst is not None:
             try:
@@ -594,14 +596,42 @@ class DHO4204:
                 self.rm.close()
             except Exception:
                 pass
-        time.sleep(1)
-        self.rm = pyvisa.ResourceManager()
-        self.inst = self.rm.open_resource(self._resource_string)
-        self.inst.timeout = self._timeout_ms
-        if "SOCKET" in self._resource_string.upper():
-            self.inst.read_termination = "\n"
-            self.inst.write_termination = "\n"
-        return self.inst
+        self.inst = None
+        self.rm = None
+
+        last_exc = None
+        for attempt in range(1, retries + 1):
+            time.sleep(base_delay * attempt)
+            try:
+                self.rm = pyvisa.ResourceManager()
+                self.inst = self.rm.open_resource(self._resource_string)
+                self.inst.timeout = self._timeout_ms
+                if "SOCKET" in self._resource_string.upper():
+                    self.inst.read_termination = "\n"
+                    self.inst.write_termination = "\n"
+                try:
+                    self.inst.clear()
+                except Exception:
+                    pass
+                return self.idn()
+            except pyvisa.errors.VisaIOError as exc:
+                last_exc = exc
+                try:
+                    if self.inst is not None:
+                        self.inst.close()
+                except Exception:
+                    pass
+                try:
+                    if self.rm is not None:
+                        self.rm.close()
+                except Exception:
+                    pass
+                self.inst = None
+                self.rm = None
+
+        raise ConnectionError(
+            f"Could not reconnect to {self._resource_string} after {retries} attempts"
+        ) from last_exc
 
     def __enter__(self):
         return self
