@@ -257,6 +257,13 @@ class DHO4204:
             (time_array, voltage_array) as numpy arrays.
 
         Notes:
+            For MAXimum/RAW mode, :WAVeform:STARt/:STOP are set to span the
+            requested points — per the programming guide's documented read
+            procedure, these (not POINts alone) define the memory window
+            :WAVeform:DATA? actually returns. Without them, a stale
+            STARt/STOP range left over from a previous session can cause
+            DATA? to return empty with no exception raised.
+
             Prefers a single query_binary_values() bulk read, which parses the
             IEEE-488.2 block header length up front and works over USB and
             LAN/socket alike. Falls back to a manual chunked read_raw loop
@@ -281,6 +288,13 @@ class DHO4204:
             max_depth = self.get_memory_depth()
             points = max(1, points) if np.isnan(max_depth) else min(max(1, points), int(max_depth))
         self.write(f":WAVeform:POINts {points}")
+
+        # RAW/MAX reads pull from internal memory — STARt/STOP (not POINts)
+        # define the actual returned data window, per the programming manual's
+        # documented read procedure.
+        if mode.upper() not in ("NORMAL", "NORM"):
+            self.write(":WAVeform:STARt 1")
+            self.write(f":WAVeform:STOP {points}")
 
         # Sync — wait for scope to acknowledge settings
         self.query("*OPC?")
@@ -447,6 +461,7 @@ class DHO4204:
         mode: str = "NORMal",
         points: int = 1000,
         save_path: str | None = None,
+        normalize: bool = False,
     ):
         """
         Capture and plot waveforms from multiple channels.
@@ -456,6 +471,8 @@ class DHO4204:
             mode:       NORMal (screen), MAXimum (full memory), RAW.
             points:     Number of points to request (NORMal max: 1000).
             save_path:  Optional path to save the figure.
+            normalize:  If True, scale each channel by its own max absolute
+                        voltage so every trace peaks at ±1.
         """
         import matplotlib.pyplot as plt
 
@@ -469,6 +486,9 @@ class DHO4204:
 
         colors = ["C0", "C1", "C2", "C3"]  # matplotlib default colors
         for idx, (ch, (t, v)) in enumerate(sorted(waveforms.items())):
+            if normalize:
+                max_v = np.max(np.abs(v))
+                v = v / max_v if max_v > 0 else v
             ax.plot(
                 t * 1e6,
                 v,
@@ -479,7 +499,7 @@ class DHO4204:
             )
 
         ax.set_xlabel("Time (µs)")
-        ax.set_ylabel("Voltage (V)")
+        ax.set_ylabel("Normalised Voltage" if normalize else "Voltage (V)")
         ax.set_title("DHO4204 — Multi-channel Waveforms")
         ax.grid(True, alpha=0.3)
         ax.legend(loc="upper right")
