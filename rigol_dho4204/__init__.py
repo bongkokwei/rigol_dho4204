@@ -84,9 +84,11 @@ class DHO4204:
         self.write("*RST")
         time.sleep(2)
 
-    def system_restart(self):
+    def system_restart(self, timeout_s: float = 30):
+        print("Starting reset...")
         self.write(":SYSTem:RESet")
-        time.sleep(15)
+        time.sleep(timeout_s)
+        print("Done reset.")
 
     def auto_scale(self):
         self.write(":AUToset")
