@@ -160,6 +160,13 @@ class DHO4204:
         self.write(f":TRIGger:EDGE:LEVel {level}")
 
     def trigger_single(self):
+        # :SINGle alone doesn't reliably pin the trigger sweep mode to
+        # SINGle — if :TRIGger:SWEep was left at AUTO from a previous
+        # session, the scope can fall back into free-running acquisition
+        # after the first trigger instead of latching to STOP. Confirmed
+        # on hardware: :TRIGger:SWEep? read back AUTO after :SINGle alone,
+        # and trigger_status() got stuck cycling TD -> AUTO -> RUN.
+        self.write(":TRIGger:SWEep SINGle")
         self.write(":SINGle")
 
     def trigger_force(self):
