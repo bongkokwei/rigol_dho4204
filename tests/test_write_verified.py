@@ -42,14 +42,14 @@ def test_write_verified_times_out_when_never_confirmed():
     assert confirmed is False
 
 
-def test_single_trigger_with_verify_confirms_and_sends_single():
+def test_single_trigger_with_verify_confirms_sweep_mode():
     scope, resource = make_scope()
     resource.query.side_effect = ["SING"]
 
     confirmed = scope.single_trigger_with_verify(timeout=1, poll_interval=0)
 
     assert confirmed is True
-    resource.write.assert_any_call(":SINGle")
+    resource.write.assert_any_call(":TRIGger:SWEep SINGle")
 
 
 def test_wait_for_trigger_stop_returns_once_stopped():

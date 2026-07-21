@@ -224,17 +224,18 @@ class DHO4204:
     def single_trigger_with_verify(self, timeout: float = 30.0, poll_interval: float = 0.2) -> bool:
         """Arm a single acquisition, confirming the sweep mode actually latches.
 
-        :SINGle alone doesn't reliably pin the trigger sweep mode to SINGle —
-        if the scope is still busy (e.g. settling from a large timebase/deep
-        memory acquisition), :TRIGger:SWEep SINGle can be silently dropped
-        with no SCPI error, leaving :TRIGger:SWEep? reading AUTO. Confirmed on
-        hardware: without retrying, trigger_status() got stuck cycling
-        TD -> AUTO -> RUN instead of latching to STOP after one trigger.
+        Setting :TRIGger:SWEep SINGle both pins the sweep mode and arms the
+        single acquisition — no separate :SINGle is needed. But the write
+        doesn't reliably land in one shot: if the scope is still busy (e.g.
+        settling from a large timebase/deep memory acquisition), it can be
+        silently dropped with no SCPI error, leaving :TRIGger:SWEep? reading
+        AUTO. Confirmed on hardware: without retrying, trigger_status() got
+        stuck cycling TD -> AUTO -> RUN instead of latching to STOP after one
+        trigger.
 
         Returns:
             True once :TRIGger:SWEep SINGle is confirmed via read-back, False
-            if it never confirmed within `timeout` seconds (in which case
-            :SINGle is still sent, but the sweep mode may not be pinned).
+            if it never confirmed within `timeout` seconds.
         """
         deadline = time.time() + timeout
         attempts = 0
@@ -244,7 +245,6 @@ class DHO4204:
             mode = self.query_safe(":TRIGger:SWEep?").strip().upper()
             if mode == "SING":
                 print(f"  sweep mode confirmed SINGle after {attempts} attempt(s)")
-                self.write(":SINGle")
                 return True
             time.sleep(poll_interval)
 
