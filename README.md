@@ -113,11 +113,12 @@ scope = DHO4204("TCPIP0::192.168.1.100::5555::SOCKET")
 - `timebase_offset(seconds)` - Set horizontal offset
 - `trigger_edge(ch, level, slope)` - Configure edge trigger
 - `trigger_level(level)` - Set trigger level
-- `trigger_single()` - Single trigger
+- `single_trigger_with_verify(timeout, poll_interval)` - Arm a single acquisition, retrying until the sweep mode is confirmed SINGle via read-back (works around silently dropped writes)
 - `trigger_force()` - Force trigger
 - `trigger_status()` - Get trigger status
 - `trigger_holdoff(seconds)` - Set trigger holdoff time (8 ns to 10 s)
 - `get_trigger_holdoff()` - Get trigger holdoff time
+- `wait_for_trigger_stop(timeout, poll_interval)` - Block until trigger_status() reports STOP; on timeout, runs system_restart() and raises TimeoutError
 
 ### Run/Stop
 

@@ -42,14 +42,31 @@ def test_write_verified_times_out_when_never_confirmed():
     assert confirmed is False
 
 
-def test_trigger_single_confirms_and_sends_single():
+def test_single_trigger_with_verify_confirms_and_sends_single():
     scope, resource = make_scope()
     resource.query.side_effect = ["SING"]
 
-    confirmed = scope.trigger_single(timeout=1, poll_interval=0)
+    confirmed = scope.single_trigger_with_verify(timeout=1, poll_interval=0)
 
     assert confirmed is True
     resource.write.assert_any_call(":SINGle")
+
+
+def test_wait_for_trigger_stop_returns_once_stopped():
+    scope, resource = make_scope()
+    resource.query.side_effect = ["RUN", "STOP"]
+
+    scope.wait_for_trigger_stop(timeout=5, poll_interval=0)  # should not raise
+
+
+def test_wait_for_trigger_stop_restarts_and_raises_on_timeout():
+    scope, resource = make_scope()
+    resource.query.return_value = "RUN"
+
+    with pytest.raises(TimeoutError):
+        scope.wait_for_trigger_stop(timeout=0.05, poll_interval=0.01)
+
+    resource.write.assert_any_call(":SYSTem:RESet")
 
 
 @pytest.mark.parametrize(

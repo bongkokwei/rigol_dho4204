@@ -36,6 +36,7 @@ class DHO4204:
     """Control interface for Rigol DHO4204 4-channel oscilloscope."""
 
     CHANNELS = (1, 2, 3, 4)
+    NUM_HORIZONTAL_DIVS = 10  # DHO4204 screen width, in horizontal divisions
 
     def __init__(self, resource_string: str | None = None, timeout_ms: int = 10_000):
         self.rm = pyvisa.ResourceManager()
@@ -220,7 +221,7 @@ class DHO4204:
     def trigger_level(self, level: float):
         self.write(f":TRIGger:EDGE:LEVel {level}")
 
-    def trigger_single(self, timeout: float = 30.0, poll_interval: float = 0.2) -> bool:
+    def single_trigger_with_verify(self, timeout: float = 30.0, poll_interval: float = 0.2) -> bool:
         """Arm a single acquisition, confirming the sweep mode actually latches.
 
         :SINGle alone doesn't reliably pin the trigger sweep mode to SINGle —
@@ -235,21 +236,45 @@ class DHO4204:
             if it never confirmed within `timeout` seconds (in which case
             :SINGle is still sent, but the sweep mode may not be pinned).
         """
-        confirmed = self.write_verified(
-            ":TRIGger:SWEep SINGle",
-            ":TRIGger:SWEep?",
-            "SINGLE",
-            timeout=timeout,
-            poll_interval=poll_interval,
-        )
-        self.write(":SINGle")
-        return confirmed
+        deadline = time.time() + timeout
+        attempts = 0
+        while time.time() < deadline:
+            attempts += 1
+            self.write(":TRIGger:SWEep SINGle")
+            mode = self.query_safe(":TRIGger:SWEep?").strip().upper()
+            if mode == "SING":
+                print(f"  sweep mode confirmed SINGle after {attempts} attempt(s)")
+                self.write(":SINGle")
+                return True
+            time.sleep(poll_interval)
+
+        print(f"  TIMED OUT after {attempts} attempt(s) — sweep mode never confirmed SINGle")
+        return False
 
     def trigger_force(self):
         self.write(":TFORce")
 
     def trigger_status(self) -> str:
         return self.query(":TRIGger:STATus?")
+
+    def wait_for_trigger_stop(self, timeout: float = 30.0, poll_interval: float = 0.05) -> None:
+        """Block until trigger_status() reports STOP.
+
+        On timeout, this issues a full system_restart() (a disruptive scope
+        reset) before raising — matches the stuck-trigger recovery procedure
+        validated on bench hardware, where a hung acquisition wouldn't clear
+        on its own.
+
+        Raises:
+            TimeoutError: if STOP is not reached within `timeout` seconds
+                (after triggering a system_restart()).
+        """
+        deadline = time.monotonic() + timeout
+        while self.trigger_status() != "STOP":
+            if time.monotonic() > deadline:
+                self.system_restart(timeout_s=timeout)
+                raise TimeoutError(f"no trigger within {timeout} s")
+            time.sleep(poll_interval)
 
     def trigger_holdoff(self, seconds: float):
         """Set trigger holdoff time in seconds (range: 8 ns to 10 s, default 8 ns).
@@ -362,7 +387,7 @@ class DHO4204:
 
             Confirmed on hardware: even after trigger_status() reports STOP,
             the scope isn't actually done — it needs roughly one full
-            capture window (timebase scale x 10 divisions) to finish
+            capture window (timebase scale x NUM_HORIZONTAL_DIVS) to finish
             processing the acquisition internally before the waveform buffer
             is ready to read out. Reading too soon returns an empty array for
             every channel, with no exception raised anywhere in the chain.
@@ -380,7 +405,7 @@ class DHO4204:
         # Scope must be stopped for reliable waveform reads on DHO4000
         self.stop()
         timebase_scale_s = self.get_timebase()["scale_s"]
-        settle_s = max(0.5, timebase_scale_s * 10)
+        settle_s = max(0.5, timebase_scale_s * self.NUM_HORIZONTAL_DIVS)
         time.sleep(settle_s)
 
         mode_upper = mode.upper()
