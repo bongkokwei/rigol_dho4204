@@ -20,6 +20,18 @@ __version__ = "0.1.0"
 __all__ = ["DHO4204"]
 
 
+def _numeric_match(expected: float, tol: float = 0.5):
+    """Build a `write_verified()` match callable for a numeric read-back."""
+
+    def _match(readback: str) -> bool:
+        try:
+            return abs(float(readback) - expected) <= tol
+        except ValueError:
+            return False
+
+    return _match
+
+
 class DHO4204:
     """Control interface for Rigol DHO4204 4-channel oscilloscope."""
 
@@ -76,6 +88,53 @@ class DHO4204:
             return self.inst.query(cmd).strip()
         except Exception:
             return default
+
+    def write_verified(
+        self,
+        cmd: str,
+        query_cmd: str,
+        match,
+        timeout: float = 5.0,
+        poll_interval: float = 0.2,
+    ) -> bool:
+        """Write a command, retrying until a read-back query confirms it took effect.
+
+        Works around a DHO4204 firmware characteristic confirmed on hardware:
+        a write issued while the scope is still busy (e.g. mid-acquisition on
+        a large timebase/deep memory setup) can be silently dropped with no
+        SCPI error surfaced (`:SYSTem:ERRor?` still reports "No error"). A
+        single write-and-trust is therefore not reliable for settings whose
+        effect matters downstream; this re-issues the write and re-queries
+        until confirmed or the timeout elapses.
+
+        Args:
+            cmd:       The SCPI write command, e.g. ":TRIGger:SWEep SINGle".
+            query_cmd: The query to read back the setting, e.g. ":TRIGger:SWEep?".
+            match:     Either the expected readback string (case-insensitive,
+                       matched against SCPI abbreviated forms too, e.g. "SINGLE"
+                       matches a readback of "SING"), or a callable
+                       `(readback: str) -> bool` for custom comparisons (e.g.
+                       numeric tolerance).
+            timeout:       Max seconds to keep retrying.
+            poll_interval: Seconds to wait between attempts.
+
+        Returns:
+            True once confirmed, False if the timeout elapsed without confirmation.
+        """
+        if isinstance(match, str):
+            expected = match.strip().upper()
+
+            def match(readback: str, _expected=expected) -> bool:
+                return readback == _expected or _expected.startswith(readback)
+
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            self.write(cmd)
+            readback = self.query_safe(query_cmd).strip().upper()
+            if match(readback):
+                return True
+            time.sleep(poll_interval)
+        return False
 
     def idn(self) -> str:
         return self.query("*IDN?")
@@ -161,15 +220,30 @@ class DHO4204:
     def trigger_level(self, level: float):
         self.write(f":TRIGger:EDGE:LEVel {level}")
 
-    def trigger_single(self):
-        # :SINGle alone doesn't reliably pin the trigger sweep mode to
-        # SINGle — if :TRIGger:SWEep was left at AUTO from a previous
-        # session, the scope can fall back into free-running acquisition
-        # after the first trigger instead of latching to STOP. Confirmed
-        # on hardware: :TRIGger:SWEep? read back AUTO after :SINGle alone,
-        # and trigger_status() got stuck cycling TD -> AUTO -> RUN.
-        self.write(":TRIGger:SWEep SINGle")
+    def trigger_single(self, timeout: float = 30.0, poll_interval: float = 0.2) -> bool:
+        """Arm a single acquisition, confirming the sweep mode actually latches.
+
+        :SINGle alone doesn't reliably pin the trigger sweep mode to SINGle —
+        if the scope is still busy (e.g. settling from a large timebase/deep
+        memory acquisition), :TRIGger:SWEep SINGle can be silently dropped
+        with no SCPI error, leaving :TRIGger:SWEep? reading AUTO. Confirmed on
+        hardware: without retrying, trigger_status() got stuck cycling
+        TD -> AUTO -> RUN instead of latching to STOP after one trigger.
+
+        Returns:
+            True once :TRIGger:SWEep SINGle is confirmed via read-back, False
+            if it never confirmed within `timeout` seconds (in which case
+            :SINGle is still sent, but the sweep mode may not be pinned).
+        """
+        confirmed = self.write_verified(
+            ":TRIGger:SWEep SINGle",
+            ":TRIGger:SWEep?",
+            "SINGLE",
+            timeout=timeout,
+            poll_interval=poll_interval,
+        )
         self.write(":SINGle")
+        return confirmed
 
     def trigger_force(self):
         self.write(":TFORce")
@@ -251,7 +325,7 @@ class DHO4204:
     # ── Waveform data acquisition ──────────────────────────────────────
 
     def get_waveform(
-        self, ch: int, mode: str = "NORMal", points: int = 1000
+        self, ch: int, mode: str = "NORMal", points: int = 1000, setup_timeout: float = 10.0
     ) -> tuple[np.ndarray, np.ndarray]:
         """
         Download waveform data from a channel.
@@ -261,6 +335,8 @@ class DHO4204:
             mode:   NORMal (screen, max 1000 pts), MAXimum/RAW (full memory,
                     clamped to current memory depth — see acquire_memory_depth()).
             points: Number of points to request.
+            setup_timeout: Max seconds to retry each :WAVeform:* setup write
+                    until its read-back confirms it took effect (see notes).
 
         Returns:
             (time_array, voltage_array) as numpy arrays.
@@ -272,6 +348,17 @@ class DHO4204:
             :WAVeform:DATA? actually returns. Without them, a stale
             STARt/STOP range left over from a previous session can cause
             DATA? to return empty with no exception raised.
+
+            Every :WAVeform:* setup write (SOURce, MODE, POINts, STARt, STOP)
+            is issued via write_verified() rather than a plain write().
+            Confirmed on hardware: this scope can silently drop a write while
+            it's still busy settling from a previous operation (e.g. a large
+            timebase/deep-memory acquisition), with no SCPI error surfaced —
+            a dropped POINts/STARt/STOP here leaves the read window
+            misconfigured and :WAVeform:DATA? comes back empty with no
+            exception. The trailing *OPC? sync happens after all setup
+            writes, which doesn't help if an earlier write in the sequence
+            was already dropped.
 
             Prefers a single query_binary_values() bulk read, which parses the
             IEEE-488.2 block header length up front and works over USB and
@@ -285,25 +372,42 @@ class DHO4204:
         self.stop()
         time.sleep(0.5)
 
-        self.write(f":WAVeform:SOURce CHANnel{ch}")
-        self.write(f":WAVeform:MODE {mode.upper()}")
+        mode_upper = mode.upper()
+        self.write_verified(
+            f":WAVeform:SOURce CHANnel{ch}", ":WAVeform:SOURce?", f"CHAN{ch}", timeout=setup_timeout
+        )
+        self.write_verified(
+            f":WAVeform:MODE {mode_upper}", ":WAVeform:MODE?", mode_upper, timeout=setup_timeout
+        )
         self.write(":WAVeform:FORMat BYTE")
 
         # Clamp points to the mode's valid range: NORMal is capped at the
         # 1000-point screen buffer; MAXimum/RAW are capped at memory depth.
-        if mode.upper() in ("NORMAL", "NORM"):
+        if mode_upper in ("NORMAL", "NORM"):
             points = min(max(1, points), 1000)
         else:
             max_depth = self.get_memory_depth()
             points = max(1, points) if np.isnan(max_depth) else min(max(1, points), int(max_depth))
-        self.write(f":WAVeform:POINts {points}")
+        self.write_verified(
+            f":WAVeform:POINts {points}",
+            ":WAVeform:POINts?",
+            _numeric_match(points),
+            timeout=setup_timeout,
+        )
 
         # RAW/MAX reads pull from internal memory — STARt/STOP (not POINts)
         # define the actual returned data window, per the programming manual's
         # documented read procedure.
-        if mode.upper() not in ("NORMAL", "NORM"):
-            self.write(":WAVeform:STARt 1")
-            self.write(f":WAVeform:STOP {points}")
+        if mode_upper not in ("NORMAL", "NORM"):
+            self.write_verified(
+                ":WAVeform:STARt 1", ":WAVeform:STARt?", _numeric_match(1), timeout=setup_timeout
+            )
+            self.write_verified(
+                f":WAVeform:STOP {points}",
+                ":WAVeform:STOP?",
+                _numeric_match(points),
+                timeout=setup_timeout,
+            )
 
         # Sync — wait for scope to acknowledge settings
         self.query("*OPC?")
