@@ -360,6 +360,15 @@ class DHO4204:
             writes, which doesn't help if an earlier write in the sequence
             was already dropped.
 
+            Confirmed on hardware: even after trigger_status() reports STOP,
+            the scope isn't actually done — it needs roughly one full
+            capture window (timebase scale x 10 divisions) to finish
+            processing the acquisition internally before the waveform buffer
+            is ready to read out. Reading too soon returns an empty array for
+            every channel, with no exception raised anywhere in the chain.
+            The settle delay below is scaled off the current timebase to
+            cover this, with a 0.5 s floor for fast timebases.
+
             Prefers a single query_binary_values() bulk read, which parses the
             IEEE-488.2 block header length up front and works over USB and
             LAN/socket alike. Falls back to a manual chunked read_raw loop
@@ -370,7 +379,9 @@ class DHO4204:
 
         # Scope must be stopped for reliable waveform reads on DHO4000
         self.stop()
-        time.sleep(0.5)
+        timebase_scale_s = self.get_timebase()["scale_s"]
+        settle_s = max(0.5, timebase_scale_s * 10)
+        time.sleep(settle_s)
 
         mode_upper = mode.upper()
         self.write_verified(
