@@ -610,7 +610,7 @@ class DHO4204:
         mode: str = "NORMal",
         points: int = 1000,
         save_path: str | None = None,
-        normalize: bool = False,
+        normalise: bool = False,
     ):
         """
         Capture and plot waveforms from multiple channels.
@@ -620,7 +620,7 @@ class DHO4204:
             mode:       NORMal (screen), MAXimum (full memory), RAW.
             points:     Number of points to request (NORMal max: 1000).
             save_path:  Optional path to save the figure.
-            normalize:  If True, scale each channel by its own max absolute
+            normalise:  If True, scale each channel by its own max absolute
                         voltage so every trace peaks at ±1.
         """
         import matplotlib.pyplot as plt
@@ -633,9 +633,9 @@ class DHO4204:
 
         fig, ax = plt.subplots(figsize=(14, 6))
 
-        colors = ["C0", "C1", "C2", "C3"]  # matplotlib default colors
+        colours = ["C0", "C1", "C2", "C3"]  # matplotlib default colours
         for idx, (ch, (t, v)) in enumerate(sorted(waveforms.items())):
-            if normalize:
+            if normalise:
                 max_v = np.max(np.abs(v))
                 v = v / max_v if max_v > 0 else v
             ax.plot(
@@ -644,11 +644,11 @@ class DHO4204:
                 linewidth=0.7,
                 rasterized=True,
                 label=f"CH{ch}",
-                color=colors[idx % len(colors)],
+                color=colours[idx % len(colours)],
             )
 
         ax.set_xlabel("Time (µs)")
-        ax.set_ylabel("Normalised Voltage" if normalize else "Voltage (V)")
+        ax.set_ylabel("Normalised Voltage" if normalise else "Voltage (V)")
         ax.set_title("DHO4204 — Multi-channel Waveforms")
         ax.grid(True, alpha=0.3)
         ax.legend(loc="upper right")
