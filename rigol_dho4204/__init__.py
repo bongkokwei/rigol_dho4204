@@ -349,8 +349,29 @@ class DHO4204:
 
     # ── Waveform data acquisition ──────────────────────────────────────
 
+    def _acquisition_settle_s(self) -> float:
+        """Seconds to wait for the scope to finish processing an acquisition.
+
+        Confirmed on hardware: even after trigger_status() reports STOP, the
+        scope isn't actually done — it needs roughly one full capture window
+        (timebase scale x NUM_HORIZONTAL_DIVS) to finish processing the
+        acquisition internally before the waveform buffer is ready to read
+        out. Reading too soon returns an empty array for every channel, with
+        no exception raised anywhere in the chain. This is a property of the
+        shared acquisition/memory buffer, not of any one channel, so callers
+        reading multiple channels from the same acquisition only need to pay
+        this once.
+        """
+        timebase_scale_s = self.get_timebase()["scale_s"]
+        return max(0.5, timebase_scale_s * self.NUM_HORIZONTAL_DIVS)
+
     def get_waveform(
-        self, ch: int, mode: str = "NORMal", points: int = 1000, setup_timeout: float = 10.0
+        self,
+        ch: int,
+        mode: str = "NORMal",
+        points: int = 1000,
+        setup_timeout: float = 10.0,
+        settle: bool = True,
     ) -> tuple[np.ndarray, np.ndarray]:
         """
         Download waveform data from a channel.
@@ -362,6 +383,10 @@ class DHO4204:
             points: Number of points to request.
             setup_timeout: Max seconds to retry each :WAVeform:* setup write
                     until its read-back confirms it took effect (see notes).
+            settle: If True (default), sleep for _acquisition_settle_s()
+                    after stopping before reading. Pass False when the
+                    caller (e.g. get_waveforms()) has already settled once
+                    for the same acquisition — the delay isn't per-channel.
 
         Returns:
             (time_array, voltage_array) as numpy arrays.
@@ -385,14 +410,8 @@ class DHO4204:
             writes, which doesn't help if an earlier write in the sequence
             was already dropped.
 
-            Confirmed on hardware: even after trigger_status() reports STOP,
-            the scope isn't actually done — it needs roughly one full
-            capture window (timebase scale x NUM_HORIZONTAL_DIVS) to finish
-            processing the acquisition internally before the waveform buffer
-            is ready to read out. Reading too soon returns an empty array for
-            every channel, with no exception raised anywhere in the chain.
-            The settle delay below is scaled off the current timebase to
-            cover this, with a 0.5 s floor for fast timebases.
+            See _acquisition_settle_s() for why a post-stop settle delay is
+            needed at all.
 
             Prefers a single query_binary_values() bulk read, which parses the
             IEEE-488.2 block header length up front and works over USB and
@@ -404,9 +423,8 @@ class DHO4204:
 
         # Scope must be stopped for reliable waveform reads on DHO4000
         self.stop()
-        timebase_scale_s = self.get_timebase()["scale_s"]
-        settle_s = max(0.5, timebase_scale_s * self.NUM_HORIZONTAL_DIVS)
-        time.sleep(settle_s)
+        if settle:
+            time.sleep(self._acquisition_settle_s())
 
         mode_upper = mode.upper()
         self.write_verified(
@@ -545,10 +563,16 @@ class DHO4204:
         if channels is None:
             channels = list(self.CHANNELS)
 
+        # Settle once for the whole acquisition rather than per channel —
+        # see _acquisition_settle_s(); it's a property of the shared memory
+        # buffer, not any individual channel.
+        self.stop()
+        time.sleep(self._acquisition_settle_s())
+
         waveforms = {}
         for ch in channels:
             try:
-                t, v = self.get_waveform(ch, mode=mode, points=points)
+                t, v = self.get_waveform(ch, mode=mode, points=points, settle=False)
                 waveforms[ch] = (t, v)
                 print(f"Fetched waveform from Channel {ch}")
             except Exception as e:
