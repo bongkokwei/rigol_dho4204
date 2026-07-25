@@ -7,6 +7,11 @@ Connection options:
   - USB:   USB0::0x1AB1::0x0588::DS4A...::INSTR
   - LAN:   TCPIP0::192.168.1.100::INSTR
   - LAN (raw): TCPIP0::192.168.1.100::5555::SOCKET
+
+Logging:
+  This module logs to the "rigol_dho4204" logger. Call
+  `logging.basicConfig(level=logging.DEBUG)` in your script to see the
+  per-call trace; by default nothing is emitted.
 """
 
 import pyvisa
@@ -14,16 +19,22 @@ import numpy as np
 import time
 import struct
 import csv
+import logging
 from pathlib import Path
 
 __version__ = "0.1.0"
 __all__ = ["DHO4204"]
 
+logger = logging.getLogger(__name__)
+logger.addHandler(logging.NullHandler())
+
 
 def _numeric_match(expected: float, tol: float = 0.5):
     """Build a `write_verified()` match callable for a numeric read-back."""
+    logger.debug("_numeric_match(expected=%r, tol=%r)", expected, tol)
 
     def _match(readback: str) -> bool:
+        logger.debug("_match(readback=%r) against %r", readback, expected)
         try:
             return abs(float(readback) - expected) <= tol
         except ValueError:
@@ -39,6 +50,7 @@ class DHO4204:
     NUM_HORIZONTAL_DIVS = 10  # DHO4204 screen width, in horizontal divisions
 
     def __init__(self, resource_string: str | None = None, timeout_ms: int = 10_000):
+        logger.debug("__init__(resource_string=%r, timeout_ms=%r)", resource_string, timeout_ms)
         self.rm = pyvisa.ResourceManager()
         self.inst = None
         if resource_string is None:
@@ -58,16 +70,19 @@ class DHO4204:
             except Exception:
                 pass
             time.sleep(0.3)
-            print(f"Connected: {self.idn()}")
+            logger.info("Connected: %s", self.idn())
         except pyvisa.errors.VisaIOError:
             # Stale USBTMC session lock from a prior process that hasn't
             # cleared yet (Windows/NI-VISA) — force a full teardown/reopen,
             # retrying with backoff until the device actually responds.
-            print(f"Connected: {self.reconnect()}")
+            logger.warning("Initial open failed, reconnecting: %s", resource_string)
+            logger.info("Connected: %s", self.reconnect())
 
     def _auto_detect(self) -> str:
         """Auto-detect the first Rigol instrument on USB/LAN."""
+        logger.debug("_auto_detect()")
         resources = self.rm.list_resources()
+        logger.debug("VISA resources found: %r", resources)
         for r in resources:
             if "1AB1" in r.upper():  # Rigol USB vendor ID
                 return r
@@ -78,16 +93,22 @@ class DHO4204:
     # ── Core VISA helpers ──────────────────────────────────────────────
 
     def write(self, cmd: str):
+        logger.debug("write(%r)", cmd)
         self.inst.write(cmd)
 
     def query(self, cmd: str) -> str:
-        return self.inst.query(cmd).strip()
+        logger.debug("query(%r)", cmd)
+        response = self.inst.query(cmd).strip()
+        logger.debug("query(%r) -> %r", cmd, response)
+        return response
 
     def query_safe(self, cmd: str, default: str = "") -> str:
         """Query with timeout protection — returns default on failure."""
+        logger.debug("query_safe(%r, default=%r)", cmd, default)
         try:
             return self.inst.query(cmd).strip()
-        except Exception:
+        except Exception as exc:
+            logger.debug("query_safe(%r) failed (%s), returning default", cmd, exc)
             return default
 
     def write_verified(
@@ -122,6 +143,7 @@ class DHO4204:
         Returns:
             True once confirmed, False if the timeout elapsed without confirmation.
         """
+        logger.debug("write_verified(cmd=%r, query_cmd=%r, timeout=%r)", cmd, query_cmd, timeout)
         if isinstance(match, str):
             expected = match.strip().upper()
 
@@ -129,62 +151,77 @@ class DHO4204:
                 return readback == _expected or _expected.startswith(readback)
 
         deadline = time.time() + timeout
+        attempts = 0
         while time.time() < deadline:
+            attempts += 1
             self.write(cmd)
             readback = self.query_safe(query_cmd).strip().upper()
             if match(readback):
+                logger.debug("write_verified(%r) confirmed after %d attempt(s)", cmd, attempts)
                 return True
             time.sleep(poll_interval)
+        logger.warning("write_verified(%r) NOT confirmed after %d attempt(s)", cmd, attempts)
         return False
 
     def idn(self) -> str:
+        logger.debug("idn()")
         return self.query("*IDN?")
 
     def reset(self):
+        logger.debug("reset()")
         self.write("*RST")
         time.sleep(2)
 
     def system_restart(self, timeout_s: float = 30):
-        print("Starting reset...")
+        logger.debug("system_restart(timeout_s=%r)", timeout_s)
+        logger.info("Starting reset...")
         self.write(":SYSTem:RESet")
         time.sleep(timeout_s)
-        print("Done reset.")
+        logger.info("Done reset.")
 
     def auto_scale(self):
+        logger.debug("auto_scale()")
         self.write(":AUToset")
         time.sleep(3)
 
     # ── Channel configuration ──────────────────────────────────────────
 
     def channel_enable(self, ch: int, on: bool = True):
+        logger.debug("channel_enable(ch=%r, on=%r)", ch, on)
         self._check_ch(ch)
         self.write(f":CHANnel{ch}:DISPlay {'ON' if on else 'OFF'}")
 
     def channel_scale(self, ch: int, volts_per_div: float):
         """Set vertical scale (V/div)."""
+        logger.debug("channel_scale(ch=%r, volts_per_div=%r)", ch, volts_per_div)
         self._check_ch(ch)
         self.write(f":CHANnel{ch}:SCALe {volts_per_div}")
 
     def channel_offset(self, ch: int, volts: float):
+        logger.debug("channel_offset(ch=%r, volts=%r)", ch, volts)
         self._check_ch(ch)
         self.write(f":CHANnel{ch}:OFFSet {volts}")
 
     def channel_coupling(self, ch: int, mode: str = "DC"):
         """Set coupling: DC, AC, or GND."""
+        logger.debug("channel_coupling(ch=%r, mode=%r)", ch, mode)
         self._check_ch(ch)
         self.write(f":CHANnel{ch}:COUPling {mode.upper()}")
 
     def channel_probe(self, ch: int, ratio: float = 10.0):
         """Set probe attenuation ratio (1, 10, 100, etc.)."""
+        logger.debug("channel_probe(ch=%r, ratio=%r)", ch, ratio)
         self._check_ch(ch)
         self.write(f":CHANnel{ch}:PROBe {ratio}")
 
     def channel_bwlimit(self, ch: int, on: bool = True):
         """Enable 20 MHz bandwidth limit."""
+        logger.debug("channel_bwlimit(ch=%r, on=%r)", ch, on)
         self._check_ch(ch)
         self.write(f":CHANnel{ch}:BWLimit {'20M' if on else 'OFF'}")
 
     def get_channel_config(self, ch: int) -> dict:
+        logger.debug("get_channel_config(ch=%r)", ch)
         self._check_ch(ch)
         return {
             "display": self.query(f":CHANnel{ch}:DISPlay?"),
@@ -197,12 +234,15 @@ class DHO4204:
     # ── Timebase ───────────────────────────────────────────────────────
 
     def timebase_scale(self, seconds_per_div: float):
+        logger.debug("timebase_scale(seconds_per_div=%r)", seconds_per_div)
         self.write(f":TIMebase:MAIN:SCALe {seconds_per_div}")
 
     def timebase_offset(self, seconds: float):
+        logger.debug("timebase_offset(seconds=%r)", seconds)
         self.write(f":TIMebase:MAIN:OFFSet {seconds}")
 
     def get_timebase(self) -> dict:
+        logger.debug("get_timebase()")
         return {
             "scale_s": float(self.query(":TIMebase:MAIN:SCALe?")),
             "offset_s": float(self.query(":TIMebase:MAIN:OFFSet?")),
@@ -212,6 +252,7 @@ class DHO4204:
 
     def trigger_edge(self, ch: int = 1, level: float = 0.0, slope: str = "POS"):
         """Configure edge trigger. slope: POS, NEG, RFAL."""
+        logger.debug("trigger_edge(ch=%r, level=%r, slope=%r)", ch, level, slope)
         self._check_ch(ch)
         self.write(":TRIGger:MODE EDGE")
         self.write(f":TRIGger:EDGE:SOURce CHANnel{ch}")
@@ -219,6 +260,7 @@ class DHO4204:
         self.write(f":TRIGger:EDGE:LEVel {level}")
 
     def trigger_level(self, level: float):
+        logger.debug("trigger_level(level=%r)", level)
         self.write(f":TRIGger:EDGE:LEVel {level}")
 
     def single_trigger_with_verify(self, timeout: float = 30.0, poll_interval: float = 0.2) -> bool:
@@ -237,6 +279,9 @@ class DHO4204:
             True once :TRIGger:SWEep SINGle is confirmed via read-back, False
             if it never confirmed within `timeout` seconds.
         """
+        logger.debug(
+            "single_trigger_with_verify(timeout=%r, poll_interval=%r)", timeout, poll_interval
+        )
         deadline = time.time() + timeout
         attempts = 0
         while time.time() < deadline:
@@ -244,17 +289,21 @@ class DHO4204:
             self.write(":TRIGger:SWEep SINGle")
             mode = self.query_safe(":TRIGger:SWEep?").strip().upper()
             if mode == "SING":
-                print(f"  sweep mode confirmed SINGle after {attempts} attempt(s)")
+                logger.info("sweep mode confirmed SINGle after %d attempt(s)", attempts)
                 return True
             time.sleep(poll_interval)
 
-        print(f"  TIMED OUT after {attempts} attempt(s) — sweep mode never confirmed SINGle")
+        logger.warning(
+            "TIMED OUT after %d attempt(s) — sweep mode never confirmed SINGle", attempts
+        )
         return False
 
     def trigger_force(self):
+        logger.debug("trigger_force()")
         self.write(":TFORce")
 
     def trigger_status(self) -> str:
+        logger.debug("trigger_status()")
         return self.query(":TRIGger:STATus?")
 
     def wait_for_trigger_stop(self, timeout: float = 30.0, poll_interval: float = 0.05) -> None:
@@ -269,9 +318,11 @@ class DHO4204:
             TimeoutError: if STOP is not reached within `timeout` seconds
                 (after triggering a system_restart()).
         """
+        logger.debug("wait_for_trigger_stop(timeout=%r, poll_interval=%r)", timeout, poll_interval)
         deadline = time.monotonic() + timeout
         while self.trigger_status() != "STOP":
             if time.monotonic() > deadline:
+                logger.error("no trigger within %s s — restarting scope", timeout)
                 self.system_restart(timeout_s=timeout)
                 raise TimeoutError(f"no trigger within {timeout} s")
             time.sleep(poll_interval)
@@ -284,18 +335,22 @@ class DHO4204:
         repetitive waveforms. Not available for Video, Timeout, Setup&Hold,
         Nth Edge, RS232, I2C, SPI, CAN, FlexRay, LIN, I2S, or 1553B triggers.
         """
+        logger.debug("trigger_holdoff(seconds=%r)", seconds)
         self.write(f":TRIGger:HOLDoff {seconds}")
 
     def get_trigger_holdoff(self) -> float:
         """Query the current trigger holdoff time in seconds."""
+        logger.debug("get_trigger_holdoff()")
         return float(self.query(":TRIGger:HOLDoff?"))
 
     # ── Run/Stop ───────────────────────────────────────────────────────
 
     def run(self):
+        logger.debug("run()")
         self.write(":RUN")
 
     def stop(self):
+        logger.debug("stop()")
         self.write(":STOP")
 
     # ── Measurements ───────────────────────────────────────────────────
@@ -306,6 +361,7 @@ class DHO4204:
           VPP, VMAX, VMIN, VAMP, VTOP, VBAS, VAVG, VRMS,
           FREQ, PER, PDUT, NDUT, RTIM, FTIM, PWIDth, NWIDth
         """
+        logger.debug("measure(ch=%r, item=%r)", ch, item)
         self._check_ch(ch)
         # DHO4000 syntax: first enable, then query
         self.write(f":MEASure:ITEM {item.upper()},CHANnel{ch}")
@@ -316,10 +372,12 @@ class DHO4204:
         try:
             return float(val)
         except ValueError:
+            logger.warning("measure(ch=%r, item=%r) got non-numeric %r", ch, item, val)
             return float("nan")
 
     def measure_all(self, ch: int) -> dict:
         """Grab common measurements for a channel."""
+        logger.debug("measure_all(ch=%r)", ch)
         items = ["VPP", "VMAX", "VMIN", "VRMS", "FREQ", "PER", "RTIM", "FTIM"]
         return {item: self.measure(ch, item) for item in items}
 
@@ -327,21 +385,26 @@ class DHO4204:
 
     def acquire_memory_depth(self, depth):
         """Set memory (record) depth, e.g. 1000, '1M', '10M', or 'AUTO'."""
+        logger.debug("acquire_memory_depth(depth=%r)", depth)
         self.write(f":ACQuire:MDEPth {depth}")
 
     def get_memory_depth(self) -> float:
         """Query current memory depth in points. Returns NaN if the scope reports AUTO."""
+        logger.debug("get_memory_depth()")
         val = self.query_safe(":ACQuire:MDEPth?", default="")
         try:
             return float(val)
         except ValueError:
+            logger.debug("get_memory_depth() non-numeric %r — returning NaN", val)
             return float("nan")
 
     def sample_rate(self) -> float:
         """Query the current sample rate (samples/sec). Read-only — derived from timebase and memory depth."""
+        logger.debug("sample_rate()")
         return float(self.query(":ACQuire:SRATe?"))
 
     def get_acquire_config(self) -> dict:
+        logger.debug("get_acquire_config()")
         return {
             "memory_depth": self.get_memory_depth(),
             "sample_rate_Sps": self.sample_rate(),
@@ -362,8 +425,11 @@ class DHO4204:
         reading multiple channels from the same acquisition only need to pay
         this once.
         """
+        logger.debug("_acquisition_settle_s()")
         timebase_scale_s = self.get_timebase()["scale_s"]
-        return max(0.5, timebase_scale_s * self.NUM_HORIZONTAL_DIVS)
+        settle_s = max(0.5, timebase_scale_s * self.NUM_HORIZONTAL_DIVS)
+        logger.debug("_acquisition_settle_s() -> %r s", settle_s)
+        return settle_s
 
     def get_waveform(
         self,
@@ -419,6 +485,14 @@ class DHO4204:
             only if that fails — a workaround for libusb0 on Windows, which
             times out on large single bulk reads.
         """
+        logger.debug(
+            "get_waveform(ch=%r, mode=%r, points=%r, setup_timeout=%r, settle=%r)",
+            ch,
+            mode,
+            points,
+            setup_timeout,
+            settle,
+        )
         self._check_ch(ch)
 
         # Scope must be stopped for reliable waveform reads on DHO4000
@@ -442,6 +516,7 @@ class DHO4204:
         else:
             max_depth = self.get_memory_depth()
             points = max(1, points) if np.isnan(max_depth) else min(max(1, points), int(max_depth))
+        logger.debug("get_waveform: clamped points=%r for mode %r", points, mode_upper)
         self.write_verified(
             f":WAVeform:POINts {points}",
             ":WAVeform:POINts?",
@@ -488,10 +563,11 @@ class DHO4204:
                 data = self.inst.query_binary_values(
                     ":WAVeform:DATA?", datatype="B", container=np.array, header_fmt="ieee"
                 )
-            except Exception:
+            except Exception as exc:
                 # Fallback: pull the data in small chunks. Needed for
                 # backends (e.g. libusb0 on Windows) that time out on
                 # large single bulk reads.
+                logger.warning("bulk read failed (%s) — falling back to chunked read", exc)
                 try:
                     self.inst.clear()
                 except Exception:
@@ -521,6 +597,7 @@ class DHO4204:
             voltage = (data.astype(float) - y_ref) * y_inc + y_orig
             time_arr = np.arange(len(voltage)) * x_inc + x_orig
 
+            logger.debug("get_waveform(ch=%r) -> %d points", ch, len(voltage))
             return time_arr, voltage
         finally:
             self.inst.timeout = old_timeout
@@ -528,6 +605,7 @@ class DHO4204:
 
     def plot_waveform(self, ch: int, save_path: str | None = None):
         """Capture and plot a waveform using matplotlib."""
+        logger.debug("plot_waveform(ch=%r, save_path=%r)", ch, save_path)
         import matplotlib.pyplot as plt
 
         t, v = self.get_waveform(ch)
@@ -541,7 +619,7 @@ class DHO4204:
 
         if save_path:
             fig.savefig(save_path, dpi=300, bbox_inches="tight")
-            print(f"Saved plot: {save_path}")
+            logger.info("Saved plot: %s", save_path)
         else:
             plt.show()
         plt.close(fig)
@@ -560,6 +638,7 @@ class DHO4204:
         Returns:
             Dictionary {channel: (time_array, voltage_array)} for each channel.
         """
+        logger.debug("get_waveforms(channels=%r, mode=%r, points=%r)", channels, mode, points)
         if channels is None:
             channels = list(self.CHANNELS)
 
@@ -574,9 +653,9 @@ class DHO4204:
             try:
                 t, v = self.get_waveform(ch, mode=mode, points=points, settle=False)
                 waveforms[ch] = (t, v)
-                print(f"Fetched waveform from Channel {ch}")
+                logger.info("Fetched waveform from Channel %d", ch)
             except Exception as e:
-                print(f"Failed to fetch waveform from Channel {ch}: {e}")
+                logger.error("Failed to fetch waveform from Channel %d: %s", ch, e)
 
         return waveforms
 
@@ -592,13 +671,14 @@ class DHO4204:
             voltage_data: Voltage array (y-axis).
             ch:           Channel number (for reference in file).
         """
+        logger.debug("save_waveform_csv(filepath=%r, ch=%r)", filepath, ch)
         with open(filepath, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow([f"Channel {ch} Waveform"])
             writer.writerow(["Time (s)", "Voltage (V)"])
             for t, v in zip(time_data, voltage_data):
                 writer.writerow([f"{t:.15e}", f"{v:.6f}"])
-        print(f"Saved waveform CSV: {filepath}")
+        logger.info("Saved waveform CSV: %s", filepath)
 
     def save_waveforms_csv(self, filepath: str, waveforms: dict[int, tuple[np.ndarray, np.ndarray]]):
         """
@@ -608,8 +688,11 @@ class DHO4204:
             filepath:   Path to save CSV file.
             waveforms:  Dictionary {channel: (time_array, voltage_array)}.
         """
+        logger.debug(
+            "save_waveforms_csv(filepath=%r, channels=%r)", filepath, sorted(waveforms.keys())
+        )
         if not waveforms:
-            print("No waveforms to save.")
+            logger.warning("No waveforms to save.")
             return
 
         with open(filepath, "w", newline="") as f:
@@ -626,7 +709,7 @@ class DHO4204:
                     row.append(f"{voltage_data[i]:.6f}")
                 writer.writerow(row)
 
-        print(f"Saved multi-channel waveforms CSV: {filepath}")
+        logger.info("Saved multi-channel waveforms CSV: %s", filepath)
 
     def plot_waveforms(
         self,
@@ -647,12 +730,20 @@ class DHO4204:
             normalise:  If True, scale each channel by its own max absolute
                         voltage so every trace peaks at ±1.
         """
+        logger.debug(
+            "plot_waveforms(channels=%r, mode=%r, points=%r, save_path=%r, normalise=%r)",
+            channels,
+            mode,
+            points,
+            save_path,
+            normalise,
+        )
         import matplotlib.pyplot as plt
 
         waveforms = self.get_waveforms(channels=channels, mode=mode, points=points)
 
         if not waveforms:
-            print("No waveforms to plot.")
+            logger.warning("No waveforms to plot.")
             return
 
         fig, ax = plt.subplots(figsize=(14, 6))
@@ -679,7 +770,7 @@ class DHO4204:
 
         if save_path:
             fig.savefig(save_path, dpi=300, bbox_inches="tight")
-            print(f"Saved plot: {save_path}")
+            logger.info("Saved plot: %s", save_path)
         else:
             plt.show()
         plt.close(fig)
@@ -688,6 +779,7 @@ class DHO4204:
 
     def screenshot(self, filepath: str = "screenshot.png"):
         """Download a screenshot from the oscilloscope."""
+        logger.debug("screenshot(filepath=%r)", filepath)
         self.write(":DISPlay:DATA? PNG")
         raw = self.inst.read_raw()
         # Strip TMC header
@@ -697,12 +789,13 @@ class DHO4204:
         if img_data[-1:] == b"\n":
             img_data = img_data[:-1]
         Path(filepath).write_bytes(img_data)
-        print(f"Screenshot saved: {filepath}")
+        logger.info("Screenshot saved: %s", filepath)
 
     # ── Cursor measurements ──────────────────────────────────────────
 
     def cursor_manual(self, ch: int, xa: float, xb: float):
         """Set manual time cursors."""
+        logger.debug("cursor_manual(ch=%r, xa=%r, xb=%r)", ch, xa, xb)
         self._check_ch(ch)
         self.write(":CURSor:MODE MANual")
         self.write(f":CURSor:MANual:SOURce CHANnel{ch}")
@@ -714,6 +807,7 @@ class DHO4204:
 
     def math_fft(self, ch: int = 1, math_ch: int = 1):
         """Enable FFT on a channel."""
+        logger.debug("math_fft(ch=%r, math_ch=%r)", ch, math_ch)
         self._check_ch(ch)
         if math_ch not in (1, 2, 3, 4):
             raise ValueError(f"Invalid math channel {math_ch}. Must be 1-4.")
@@ -725,6 +819,7 @@ class DHO4204:
 
     def save_setup(self) -> bytes:
         """Read the current setup as a binary data blob (to save externally)."""
+        logger.debug("save_setup()")
         old_timeout = self.inst.timeout
         self.inst.timeout = 15_000
         try:
@@ -736,6 +831,7 @@ class DHO4204:
 
     def recall_setup(self, setup_data: bytes):
         """Restore a setup from a binary data blob previously obtained via save_setup()."""
+        logger.debug("recall_setup(%d bytes)", len(setup_data))
         # Build TMC/IEEE 488.2 block header: #N<length_digits><data>
         length_str = str(len(setup_data))
         header = f"#{ len(length_str)}{length_str}".encode()
@@ -745,11 +841,13 @@ class DHO4204:
     # ── Utility ──────────────────────────────────────────────────────
 
     def _check_ch(self, ch: int):
+        logger.debug("_check_ch(ch=%r)", ch)
         if ch not in self.CHANNELS:
             raise ValueError(f"Invalid channel {ch}. Must be one of {self.CHANNELS}")
 
     def close(self):
         """Release the VISA session cleanly. Safe to call multiple times."""
+        logger.debug("close()")
         if self.inst is None:
             return
         for action in (self.inst.clear, self.inst.close, self.rm.close):
@@ -763,6 +861,7 @@ class DHO4204:
         time.sleep(1)
         self.inst = None
         self.rm = None
+        logger.info("VISA session closed")
 
     def reconnect(self, retries: int = 5, base_delay: float = 1.0) -> str:
         """Force a full VISA session teardown and reopen, retrying with
@@ -775,6 +874,7 @@ class DHO4204:
         reliable. Uses the resource string and timeout stored at __init__
         time. Returns the *IDN? response on success.
         """
+        logger.debug("reconnect(retries=%r, base_delay=%r)", retries, base_delay)
         if self.inst is not None:
             try:
                 self.inst.clear()
@@ -794,6 +894,7 @@ class DHO4204:
 
         last_exc = None
         for attempt in range(1, retries + 1):
+            logger.debug("reconnect attempt %d/%d", attempt, retries)
             time.sleep(base_delay * attempt)
             try:
                 self.rm = pyvisa.ResourceManager()
@@ -808,6 +909,7 @@ class DHO4204:
                     pass
                 return self.idn()
             except pyvisa.errors.VisaIOError as exc:
+                logger.warning("reconnect attempt %d failed: %s", attempt, exc)
                 last_exc = exc
                 try:
                     if self.inst is not None:
@@ -827,7 +929,9 @@ class DHO4204:
         ) from last_exc
 
     def __enter__(self):
+        logger.debug("__enter__()")
         return self
 
     def __exit__(self, *_):
+        logger.debug("__exit__()")
         self.close()
