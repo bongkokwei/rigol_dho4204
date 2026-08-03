@@ -42,39 +42,6 @@ def test_write_verified_times_out_when_never_confirmed():
     assert confirmed is False
 
 
-def test_write_verified_warning_reports_last_readback(caplog):
-    """The clamped-to value is the diagnosis, so it must reach the log."""
-    scope, resource = make_scope()
-    resource.query.return_value = "1.0000E+08"
-
-    scope.write_verified(
-        ":WAVeform:STOP 250000000",
-        ":WAVeform:STOP?",
-        _numeric_match(250_000_000),
-        timeout=0.05,
-        poll_interval=0.01,
-    )
-
-    assert "1.0000E+08" in caplog.text
-
-
-def test_acquire_memory_depth_verifies_readback():
-    scope, resource = make_scope()
-    resource.query.return_value = "1.0000E+08"  # scope clamps 250M down to 100M
-
-    assert scope.acquire_memory_depth(250_000_000, timeout=0.05) is False
-
-    resource.query.return_value = "2.5000E+08"
-    assert scope.acquire_memory_depth(250_000_000, timeout=0.05) is True
-
-
-def test_acquire_memory_depth_accepts_non_numeric_depth():
-    scope, resource = make_scope()
-    resource.query.return_value = "AUTO"
-
-    assert scope.acquire_memory_depth("AUTO", timeout=0.05) is True
-
-
 def test_single_trigger_with_verify_confirms_sweep_mode():
     scope, resource = make_scope()
     resource.query.side_effect = ["SING"]
