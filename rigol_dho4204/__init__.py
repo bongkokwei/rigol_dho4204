@@ -172,6 +172,7 @@ class DHO4204:
 
         deadline = time.time() + timeout
         attempts = 0
+        readback = ""
         while time.time() < deadline:
             attempts += 1
             self.write(cmd)
@@ -180,7 +181,16 @@ class DHO4204:
                 logger.debug("write_verified(%r) confirmed after %d attempt(s)", cmd, attempts)
                 return True
             time.sleep(poll_interval)
-        logger.warning("write_verified(%r) NOT confirmed after %d attempt(s)", cmd, attempts)
+        # Include the last read-back: when the scope is clamping a request to a
+        # legal value (rather than dropping the write while busy) that value is
+        # the whole diagnosis, and every attempt returns the same one.
+        logger.warning(
+            "write_verified(%r) NOT confirmed after %d attempt(s) — %s last read back %r",
+            cmd,
+            attempts,
+            query_cmd,
+            readback,
+        )
         return False
 
     def idn(self) -> str:
@@ -403,10 +413,24 @@ class DHO4204:
 
     # ── Acquisition (memory depth / sample rate) ────────────────────────
 
-    def acquire_memory_depth(self, depth):
-        """Set memory (record) depth, e.g. 1000, '1M', '10M', or 'AUTO'."""
-        logger.debug("acquire_memory_depth(depth=%r)", depth)
-        self.write(f":ACQuire:MDEPth {depth}")
+    def acquire_memory_depth(self, depth, timeout: float = 5.0) -> bool:
+        """Set memory (record) depth, e.g. 1000, '1M', '10M', or 'AUTO'.
+
+        Verified via read-back, because the scope only accepts a discrete set
+        of depths (and the legal maximum halves as more channels are turned
+        on). An out-of-range or non-discrete request is snapped to a legal
+        value silently, with no SCPI error — and every downstream
+        :WAVeform:POINts/:STOP request is then capped at whatever actually
+        took effect. Returns True if the read-back confirms the request.
+        """
+        logger.debug("acquire_memory_depth(depth=%r, timeout=%r)", depth, timeout)
+        try:
+            match = _numeric_match(float(depth))
+        except (TypeError, ValueError):
+            match = str(depth)  # e.g. "AUTO", or a suffixed form like "10M"
+        return self.write_verified(
+            f":ACQuire:MDEPth {depth}", ":ACQuire:MDEPth?", match, timeout=timeout
+        )
 
     def get_memory_depth(self) -> float:
         """Query current memory depth in points. Returns NaN if the scope reports AUTO."""
@@ -618,6 +642,16 @@ class DHO4204:
             time_arr = np.arange(len(voltage)) * x_inc + x_orig
 
             logger.debug("get_waveform(ch=%r) -> %d points", ch, len(voltage))
+            if len(voltage) < points:
+                # Usually means the record in memory is shorter than the
+                # requested window — memory depth didn't take, or the
+                # acquisition was stopped part-way through its sweep.
+                logger.warning(
+                    "get_waveform(ch=%d): requested %d points, scope returned %d",
+                    ch,
+                    points,
+                    len(voltage),
+                )
             return time_arr, voltage
         finally:
             self.inst.timeout = old_timeout
@@ -673,7 +707,7 @@ class DHO4204:
             try:
                 t, v = self.get_waveform(ch, mode=mode, points=points, settle=False)
                 waveforms[ch] = (t, v)
-                logger.info("Fetched waveform from Channel %d", ch)
+                logger.info("Fetched waveform from Channel %d (%d points)", ch, len(v))
             except Exception as e:
                 logger.error("Failed to fetch waveform from Channel %d: %s", ch, e)
 
@@ -703,8 +737,8 @@ class DHO4204:
             channels: One or more channels read from the single acquisition.
             out:      If given, also write the record to this CSV path
                       (Time (s), CH1 (V), CH2 (V), ...).
-            wait_for_trigger: False (default) forces a trigger immediately so
-                      the record always completes. True waits for the edge you
+            wait_for_trigger: False (default) free-runs and waits `duration`
+                      for the record to fill. True waits for the edge you
                       configured via trigger_edge(), raising TimeoutError if it
                       never fires within `trigger_timeout`.
             trigger_timeout: Seconds to wait when wait_for_trigger is True.
@@ -734,16 +768,16 @@ class DHO4204:
             logger.info("requested %d points, snapped to memory depth %d", points, depth)
         self.acquire_memory_depth(depth)
 
-        # Arm one single-sweep acquisition, then force it now or wait for the edge.
-        self.single_trigger_with_verify()
         if wait_for_trigger:
+            self.single_trigger_with_verify()
             self.wait_for_trigger_stop(trigger_timeout)
         else:
-            self.trigger_force()
+            # ponytail: SINGle won't latch reliably — free-run and wait out the
+            # record, since get_waveforms() stops the scope before it settles.
+            self.run()
+            time.sleep(duration * 1.1)
 
-        # get_waveforms stops + settles once for the shared acquisition; the
-        # settle (>= the record window) also covers a force-now acquisition's
-        # fill time before the read.
+        # get_waveforms stops + settles once for the shared acquisition.
         waveforms = self.get_waveforms(channels, mode="RAW", points=depth)
         if out:
             self.save_waveforms_csv(out, waveforms)

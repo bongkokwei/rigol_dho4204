@@ -52,7 +52,7 @@ def _stub_capture_deps(scope, canned):
     scope.acquire_memory_depth = MagicMock()
     scope.single_trigger_with_verify = MagicMock(return_value=True)
     scope.wait_for_trigger_stop = MagicMock()
-    scope.trigger_force = MagicMock()
+    scope.run = MagicMock()
     scope.get_waveforms = MagicMock(return_value=canned)
     scope.save_waveforms_csv = MagicMock()
     scope.sample_rate = MagicMock(return_value=2e6)
@@ -74,19 +74,22 @@ def test_capture_snaps_depth_and_returns_shared_time_axis():
     assert np.array_equal(data[2], np.arange(4.0) * 2)
 
 
-def test_capture_forces_trigger_by_default_and_waits_when_asked():
+def test_capture_free_runs_for_the_record_by_default_and_waits_when_asked():
     scope = make_scope()
     t = np.array([0.0, 1.0])
     _stub_capture_deps(scope, {1: (t, t)})
 
-    scope.capture(duration=0.5, points=1000, channels=[1])
-    scope.trigger_force.assert_called_once()
+    with patch("rigol_dho4204.time.sleep") as sleep:
+        scope.capture(duration=0.5, points=1000, channels=[1])
+    scope.run.assert_called_once()
     scope.wait_for_trigger_stop.assert_not_called()
+    # the record must be waited out, or the buffer is read part-filled
+    assert any(call.args[0] >= 0.5 for call in sleep.call_args_list)
 
     _stub_capture_deps(scope, {1: (t, t)})
     scope.capture(duration=0.5, points=1000, channels=[1], wait_for_trigger=True, trigger_timeout=3.0)
     scope.wait_for_trigger_stop.assert_called_once_with(3.0)
-    scope.trigger_force.assert_not_called()
+    scope.run.assert_not_called()
 
 
 def test_capture_writes_csv_only_when_out_given():
