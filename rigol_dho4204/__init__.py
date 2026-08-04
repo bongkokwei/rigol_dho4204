@@ -43,6 +43,26 @@ def _numeric_match(expected: float, tol: float = 0.5):
     return _match
 
 
+# Available memory depths (points) per number of enabled channels, from the
+# DHO4000 :ACQuire:MDEPth spec (Programming Manual §3.7.3). The ceiling drops
+# as more channels share the acquisition memory.
+_MEMORY_DEPTHS = {
+    1: [1_000, 10_000, 100_000, 1_000_000, 10_000_000, 25_000_000, 50_000_000,
+        100_000_000, 125_000_000, 200_000_000, 250_000_000, 500_000_000],
+    2: [1_000, 10_000, 100_000, 1_000_000, 10_000_000, 25_000_000, 50_000_000,
+        100_000_000, 125_000_000, 250_000_000],
+    "many": [1_000, 10_000, 100_000, 1_000_000, 10_000_000, 25_000_000,
+             50_000_000, 100_000_000, 125_000_000],  # 3 or 4 channels
+}
+
+
+def _nearest_memory_depth(points: int, n_channels: int) -> int:
+    """Snap a requested point count to the nearest hardware memory depth
+    available for the given number of active channels."""
+    depths = _MEMORY_DEPTHS.get(n_channels, _MEMORY_DEPTHS["many"])
+    return min(depths, key=lambda d: abs(d - points))
+
+
 class DHO4204:
     """Control interface for Rigol DHO4204 4-channel oscilloscope."""
 
@@ -658,6 +678,79 @@ class DHO4204:
                 logger.error("Failed to fetch waveform from Channel %d: %s", ch, e)
 
         return waveforms
+
+    def capture(
+        self,
+        duration: float,
+        points: int,
+        channels: tuple[int, ...] | list[int] = (1,),
+        out: str | None = None,
+        wait_for_trigger: bool = False,
+        trigger_timeout: float = 10.0,
+    ) -> tuple[np.ndarray, dict[int, np.ndarray]]:
+        """
+        Record one contiguous acquisition of a given duration and return it.
+
+        The scope captures a fixed record per trigger, so `duration` sets the
+        timebase (10 divisions span the record) and `points` selects the memory
+        depth. Sample rate is derived: depth / duration.
+
+        Args:
+            duration: Seconds of signal to record (the full record window).
+            points:   Desired total samples; snapped to the nearest hardware
+                      memory depth available for the channel count (the actual
+                      value is logged and reflected in the returned arrays).
+            channels: One or more channels read from the single acquisition.
+            out:      If given, also write the record to this CSV path
+                      (Time (s), CH1 (V), CH2 (V), ...).
+            wait_for_trigger: False (default) forces a trigger immediately so
+                      the record always completes. True waits for the edge you
+                      configured via trigger_edge(), raising TimeoutError if it
+                      never fires within `trigger_timeout`.
+            trigger_timeout: Seconds to wait when wait_for_trigger is True.
+
+        Returns:
+            (time_array, {channel: voltage_array}) — one shared time axis.
+        """
+        logger.debug(
+            "capture(duration=%r, points=%r, channels=%r, out=%r, wait_for_trigger=%r)",
+            duration, points, channels, out, wait_for_trigger,
+        )
+        channels = list(channels)
+        for ch in channels:
+            self.channel_enable(ch, True)
+
+        # duration -> timebase; 10 divisions span the whole record
+        self.timebase_scale(duration / self.NUM_HORIZONTAL_DIVS)
+        actual_window = self.get_timebase()["scale_s"] * self.NUM_HORIZONTAL_DIVS
+        if abs(actual_window - duration) > 0.01 * duration:
+            logger.warning(
+                "requested %g s window, scope clamped to %g s", duration, actual_window
+            )
+
+        # points -> nearest available memory depth for this channel count
+        depth = _nearest_memory_depth(points, len(channels))
+        if depth != points:
+            logger.info("requested %d points, snapped to memory depth %d", points, depth)
+        self.acquire_memory_depth(depth)
+
+        # Arm one single-sweep acquisition, then force it now or wait for the edge.
+        self.single_trigger_with_verify()
+        if wait_for_trigger:
+            self.wait_for_trigger_stop(trigger_timeout)
+        else:
+            self.trigger_force()
+
+        # get_waveforms stops + settles once for the shared acquisition; the
+        # settle (>= the record window) also covers a force-now acquisition's
+        # fill time before the read.
+        waveforms = self.get_waveforms(channels, mode="RAW", points=depth)
+        if out:
+            self.save_waveforms_csv(out, waveforms)
+
+        logger.info("capture: %d pts/ch at %g Sa/s", depth, self.sample_rate())
+        time_axis = next(iter(waveforms.values()))[0] if waveforms else np.array([])
+        return time_axis, {ch: v for ch, (_t, v) in waveforms.items()}
 
     def save_waveform_csv(
         self, filepath: str, time_data: np.ndarray, voltage_data: np.ndarray, ch: int = 1
