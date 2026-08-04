@@ -58,6 +58,30 @@ with DHO4204() as scope:
         scope.save_waveform_csv(f"ch{ch}.csv", t, v, ch=ch)
 ```
 
+## Duration-driven Capture
+
+Record one contiguous acquisition of a chosen length. You pick the `duration`
+(seconds of signal) and `points` (samples); the scope's timebase and memory
+depth are set for you, and `points` is snapped to the nearest hardware memory
+depth (the ceiling drops as more channels are enabled):
+
+```python
+with DHO4204() as scope:
+    # 0.5 s window, ~1M samples, channels 1 & 2, written to CSV.
+    t, data = scope.capture(duration=0.5, points=1_000_000,
+                            channels=[1, 2], out="rec.csv")
+    # data[1], data[2] are voltage arrays sharing time axis t.
+
+    # Wait for a configured edge instead of grabbing immediately:
+    scope.trigger_edge(ch=1, level=1.0)
+    t, data = scope.capture(duration=1e-3, points=100_000, channels=[1],
+                            wait_for_trigger=True, trigger_timeout=10)
+```
+
+By default `capture()` forces a trigger so the record always completes
+immediately. The actual points/sample-rate achieved are logged (enable logging
+per the note at the top of the module).
+
 ## Increasing Waveform Resolution & Range
 
 `NORMal` mode is capped at 1000 points (the scope's screen buffer). For higher resolution or a longer capture window, set the memory depth and use `MAXimum`/`RAW` mode — points are now clamped to the actual memory depth instead of being silently ignored:
